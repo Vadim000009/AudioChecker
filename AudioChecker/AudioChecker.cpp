@@ -107,27 +107,6 @@ vector <short> readAmplitudesFromWAV(string fileName, SF_INFO fileInfo/*, vector
 	}
 }
 
-/* Пример реализации, удалить
-static void readFile(SNDFILE *fileWAV, SF_INFO fileInfo) {
-	int frames = fileInfo.frames;
-	short *leftChennel = new short[BLOCK_SIZE*frames];
-	short *rightChannel = new short[BLOCK_SIZE*frames];
-	short *buf = new short[BLOCK_SIZE * BLOCK_SIZE];
-	int k = 0, m, readcount;
-	FILE *fout = fopen("listKal.dat", "w");
-	while (readcount = static_cast<short>(sf_read_short(fileWAV, buf, BLOCK_SIZE)) > 0) {
-			//leftChennel[k] = buf[k*channels + m];
-			k++;
-			rightChannel[k] = buf[1];
-			k++;
-	}
-	delete[] leftChennel;
-	delete[] rightChannel;
-	fclose(fout);
-	sf_close;
-	return;
-}*/
-
 /* Функция, получающая амплитуды из двух файлов и загоняющая их в векторный массив.
 @fstFileToCompare и @secFileToCompare являются указателями на файлы,из которых будут полученны амплитуды.
 @channels является указателем на количество каналов аудио. 
@@ -283,38 +262,6 @@ int main(int argc, char* argv[]) {
 		getline(cin, secFile);
 		getAmplitudesArray(&fstFile, &secFile, &channels);
 	}
-	
-	//-------------------------------
-	// Coldplay - Viva La Vida (low).wav
-	//string file = "Marlena Shaw - California Soul.wav";
-	//string file = "listLow.dat";
-	//string file2 = "listLow2.dat";
-	//int channels = 2;
-	//cout << "Введите название файла\n";
-	//getAmplitudesArray(&file, &file2, &channels);
-//	getline(cin, file);
-//	SNDFILE *fileWAV = NULL;
-//	SF_INFO sfinfo;
-
-//	wstring wide_string = wstring(file.begin(), file.end());
-//	const wchar_t* out = wide_string.c_str();
-
-//	char *chrstr = new char[file.length() + 1];	// из String в char
-//	strcpy(chrstr, file.c_str());
-	
-//	if ((fileWAV = sf_wchar_open(out, SFM_READ, &sfinfo)) == NULL)
-//	{
-//		printf("Not able to open file %s.\n", out);
-//		puts(sf_strerror(NULL));
-//		return 1;
-//	}
-//	cout << sfinfo.format << endl;
-//	cout << sfinfo.channels << endl;
-//	cout << sfinfo.samplerate << endl;
-//	cout << sfinfo.frames << endl;
-//	readFile(fileWAV, sfinfo);
-	// На вход поступает три аргумента ПОКА ЧТО. Название двух файлов с амплитудами и количество каналов.
-
 	return 0;
 
 }
