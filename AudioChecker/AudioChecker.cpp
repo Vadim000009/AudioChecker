@@ -4,11 +4,10 @@
 #include "sndfile.h"
 #include <iostream>
 #include <vector>
-#include <algorithm>
 #include <iomanip>
 #include <fstream>
 #include <string>
-//include <thread>
+#include <thread>
 #define BLOCK_SIZE 2
 
 using doubleByte = unsigned char;
@@ -20,9 +19,7 @@ void getAmplitudesArray(string *fstFileToCompare, string *secFileToCompare, int 
 void compareMono(vector<short> *fstArr, vector<short> *secArr);
 void compareStereo(vector<short> *leftFstArr, vector<short> *rightFstArr, vector<short> *leftSecArr, vector<short> *rightSecArr);
 void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare);
-//vector <short> readAmplitudesFromWAV(string fileName/*, vector <short> *vectorToAmplitudes*/);
-vector <short> readAmplitudesFromWAV(string fileName, SF_INFO fileInfo);
-//short readAmplitudesFromWAV(string fileName);
+void readAmplitudesFromWAV(string fileName, SF_INFO fileInfo,  vector <short>& vectorToAmplitudes);
 
 
 /* Функция, отвечающая за сравнение двух wav файлов.
@@ -31,13 +28,6 @@ vector <short> readAmplitudesFromWAV(string fileName, SF_INFO fileInfo);
 @fstFileToCompare и @secFileToCompare являются строками с названиями файла.
 По итогу работы, в месте запуска программы создаётся файл compareWAV.dat с резульататми сравнения двух файлов. */
 void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare) {
-	// Доработать многопоточность
-	//vector <short> *fstAmplitudesArrayFromFile = new vector <short>;
-	//vector <short> *secAmplitudesArrayFromFile = new vector <short>;
-	//thread fst(readAmplitudesFromWAV, *fstFileToCompare, *fstAmplitudesArrayFromFile);
-	//thread sec(readAmplitudesFromWAV, *secFileToCompare, *secAmplitudesArrayFromFile);
-	//fst.join();
-	//sec.join();
 	// заранее делаем копии наших передаваемыхъ данных для удобства работы
 	string fstFileName = *fstFileToCompare, secFileName = *secFileToCompare;
 	SF_INFO fstFileInfo, secFileInfo;
@@ -61,8 +51,12 @@ void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare) {
 	}
 	sf_close(fstFileWAV);
 	sf_close(secFileWAV);
-	vector <short> fstArr = readAmplitudesFromWAV(*fstFileToCompare, fstFileInfo);
-	vector <short> secArr = readAmplitudesFromWAV(*secFileToCompare, secFileInfo);
+	vector <short> fstArr;
+	vector <short> secArr;
+	thread fst(readAmplitudesFromWAV, *fstFileToCompare, fstFileInfo, ref(fstArr));
+	thread sec(readAmplitudesFromWAV, *secFileToCompare, secFileInfo, ref(secArr));
+	fst.join();
+	sec.join();
 	if (fstFileChannels == 1) {
 		compareMono(&fstArr, &secArr);
 		cout << "Очистка памяти\n";
@@ -98,28 +92,19 @@ void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare) {
 данного аудиофайла.
 В самой же процедуре считывание файла происходит с помощью библиотеки "libsndfile". 
 Руководство по данной библиотеке - http://www.mega-nerd.com/libsndfile/api.html */
-vector <short> readAmplitudesFromWAV(string fileName, SF_INFO fileInfo/*, vector <short> vectorToAmplitudes*/ ) {
+void readAmplitudesFromWAV(string fileName, SF_INFO fileInfo, vector <short>& vectorToAmplitudes) {
 	SNDFILE *fileWAV = sf_open(fileName.c_str(), SFM_READ, &fileInfo);
-	vector <short> vectorWithAmplitudes;
 	if (fileWAV == NULL) {
 		cout << "Файл не найден! Работа прекращена";
-		vector <short> nullvector;
-		return vectorWithAmplitudes;
+		return;
 	} else {
-		//int channels = fileInfo.channels, frames = fileInfo.frames;
-		//short *arrayAmplitudes = new short[frames];
 		short *buffer = new short[BLOCK_SIZE];
 		int count, k = 0;
 		while (count = static_cast<short>(sf_read_short(fileWAV, &buffer[0], BLOCK_SIZE)) > 0) {
-			//vectorToAmplitudes.push_back(buffer[0]);
-			vectorWithAmplitudes.push_back(buffer[0]);
-			//arrayAmplitudes[k] = buffer[0];
-			//k++;
+			vectorToAmplitudes.push_back(buffer[0]);
 		}
 		sf_close(fileWAV);
 		cout << "Файл " << fileName << " успешно прочитан!\n";
-		//return *arrayAmplitudes;
-		return vectorWithAmplitudes;
 	}
 }
 
