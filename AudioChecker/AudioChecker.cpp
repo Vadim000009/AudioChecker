@@ -4,10 +4,11 @@
 #include "sndfile.h"
 #include <iostream>
 #include <vector>
+#include <algorithm>
 #include <iomanip>
 #include <fstream>
 #include <string>
-#include <thread>
+//include <thread>
 #define BLOCK_SIZE 2
 
 using doubleByte = unsigned char;
@@ -43,36 +44,51 @@ void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare) {
 	// Узнаём данные о WAV файле. В дальнейшем, можно будет и для большего количества файлов сделать.
 	SNDFILE *fstFileWAV = sf_open(fstFileName.c_str(), SFM_READ, &fstFileInfo);
 	SNDFILE *secFileWAV = sf_open(secFileName.c_str(), SFM_READ, &secFileInfo);
-	int fstFilechannels = fstFileInfo.channels, secFilechannels = secFileInfo.channels;
-	if (fstFilechannels != secFilechannels) {
-		cout << "Количество каналов сравниваемых файлов не равно! В файлах:\n\t" <<
-			fstFileName << " содержится " << fstFilechannels << " каналов.\n\t" <<
-			secFileName << " содержится " << secFilechannels << " каналов.\n";
+	if (fstFileWAV == NULL or secFileWAV == NULL) {
+		cout << "Один из файлов указан НЕВЕРНО! Программа будет прекращена\n";
+		return;
 	}
+	int fstFileChannels = fstFileInfo.channels, secFileChannels = secFileInfo.channels,
+		fstFileFrames = fstFileInfo.frames, secFileFrames = secFileInfo.frames;
+	if (fstFileChannels != secFileChannels) {
+		cout << "Количество каналов сравниваемых файлов не равно! В файлах:\n\t" <<
+			fstFileName << " содержится " << fstFileChannels << " каналов.\n\t" <<
+			secFileName << " содержится " << secFileChannels << " каналов.\n";
+		if (fstFileFrames < secFileFrames) {
+			cout << "Амплитуд в файле " << secFileToCompare << " больше чем в " << fstFileToCompare << ". Программа будет прекращена.";
+			return;
+		}
+	}
+	sf_close(fstFileWAV);
+	sf_close(secFileWAV);
 	vector <short> fstArr = readAmplitudesFromWAV(*fstFileToCompare, fstFileInfo);
 	vector <short> secArr = readAmplitudesFromWAV(*secFileToCompare, secFileInfo);
-	if(fstFilechannels == 1) {
+	if (fstFileChannels == 1) {
 		compareMono(&fstArr, &secArr);
-		delete &fstArr, &secArr;
-	} else if (fstFilechannels == 2) {
+		cout << "Очистка памяти\n";
+		for (auto arr : fstArr) delete &arr;
+		for (auto arr : secArr) delete &arr;
+	} else if (fstFileChannels == 2) {
 		vector <short> leftFstArr, rightFstArr, leftSecArr, rightSecArr;
 		bool channel = false;
 		for (int i = 0; i < fstArr.size(); i++) {
 			if (channel == false) {
 				leftFstArr.push_back(fstArr.at(i));
 				leftSecArr.push_back(secArr.at(i));
-				channel == true;
+				channel = true;
 			} else if (channel == true) {
 				rightFstArr.push_back(fstArr.at(i));
 				rightSecArr.push_back(secArr.at(i));
-				channel == false;
+				channel = false;
 			}
 		}
 		compareStereo(&leftFstArr, &rightFstArr, &leftSecArr, &rightSecArr);
-		delete &leftFstArr, &rightFstArr, &leftSecArr, &rightSecArr;
+		cout << "Очистка памяти\n";
+		for (auto arr : leftFstArr) delete &arr;
+		for (auto arr : rightFstArr) delete &arr;
+		for (auto arr : leftSecArr) delete &arr;
+		for (auto arr : rightSecArr) delete &arr;
 	}
-	sf_close(fstFileWAV);
-	sf_close(secFileWAV);
 	cout << "Сравнение файлов прошло успешно!\n";
 }
 
@@ -83,9 +99,9 @@ void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare) {
 В самой же процедуре считывание файла происходит с помощью библиотеки "libsndfile". 
 Руководство по данной библиотеке - http://www.mega-nerd.com/libsndfile/api.html */
 vector <short> readAmplitudesFromWAV(string fileName, SF_INFO fileInfo/*, vector <short> vectorToAmplitudes*/ ) {
-	SNDFILE *fileWAV;
+	SNDFILE *fileWAV = sf_open(fileName.c_str(), SFM_READ, &fileInfo);
 	vector <short> vectorWithAmplitudes;
-	if ((fileWAV = sf_open(fileName.c_str(), SFM_READ, &fileInfo)) = NULL) {
+	if (fileWAV == NULL) {
 		cout << "Файл не найден! Работа прекращена";
 		vector <short> nullvector;
 		return vectorWithAmplitudes;
@@ -113,12 +129,10 @@ vector <short> readAmplitudesFromWAV(string fileName, SF_INFO fileInfo/*, vector
 Возможны случаи получения для моно и стерео. */
 void getAmplitudesArray(string *fstFileToCompare, string *secFileToCompare, int *channels) {
 	ifstream fstOpen, secOpen;
+	fstOpen.open(fstFileToCompare->c_str(), ios_base::in);
+	secOpen.open(secFileToCompare->c_str(), ios_base::in);
 	short amplitude = 0;
-	try {
-		fstOpen.open(fstFileToCompare->c_str(), ios_base::in);
-		secOpen.open(secFileToCompare->c_str(), ios_base::in);
-	}
-	catch (...) {
+	if (!(fstOpen.is_open() and secOpen.is_open())) {
 		cout << "Ошибка открытия файла! Программа будет закрыта\n";
 		fstOpen.close();
 		secOpen.close();
@@ -139,6 +153,8 @@ void getAmplitudesArray(string *fstFileToCompare, string *secFileToCompare, int 
 		cout << "Чтение прошло успешно!\n" << "Количество амплитуд первого файла: " << monoChannelFstFile.size() <<
 			". Количество амплитуд второго файла: " << monoChannelSecFile.size();
 		compareMono(&monoChannelFstFile, &monoChannelSecFile);
+		for (auto arr : monoChannelFstFile) delete &arr;
+		for (auto arr : monoChannelSecFile) delete &arr;
 	} else if (*channels == 2) {
 		vector <short> leftChannelFstFile;
 		vector <short> rightChannelFstFile;
@@ -169,6 +185,10 @@ void getAmplitudesArray(string *fstFileToCompare, string *secFileToCompare, int 
 		cout << "Чтение прошло успешно!\n" << "Количество амплитуд первого файла: " << leftChannelFstFile.size() + rightChannelFstFile.size() <<
 			". Количество амплитуд второго файла: " << leftChannelSecFile.size() + rightChannelSecFile.size();
 		compareStereo(&leftChannelFstFile, &rightChannelFstFile, &leftChannelSecFile, &rightChannelSecFile);
+		for (auto arr : leftChannelFstFile) delete &arr;
+		for (auto arr : rightChannelFstFile) delete &arr;
+		for (auto arr : leftChannelSecFile) delete &arr;
+		for (auto arr : rightChannelSecFile) delete &arr;
 	}
 	fstOpen.close();
 	secOpen.close();
@@ -243,24 +263,24 @@ int main(int argc, char* argv[]) {
 		compareWAVfiles(&fstFileToCompare, &secFileToCompare);
 	}
 	noARGS:
-	string fstFile = "", secFile = "";
-	int choose = 0, channels = 0;
+	string fstFile = "", secFile = "", choose = "", channels = "";
 	cout << "Выберите сравнение\nДвух файлов с амплитудами - 1\nДвух WAV файлов - 2\nВыбор: ";
-	cin >> choose;
-	if (choose == 1) {
+	getline(cin, choose);
+	if (choose == "1") {
 		cout << "Введите название первого файла для сравнения: ";
 		getline(cin, fstFile);
 		cout << "Введите название второго файла для сравнения: ";
 		getline(cin, secFile);
 		cout << "Укажите количество каналов аудио обоих файлов: ";
-		cin >> channels;
-		getAmplitudesArray(&fstFile, &secFile, &channels);
-	} else if (choose == 2) {
+		getline(cin, channels);
+		int channel = atoi(channels.c_str());
+		getAmplitudesArray(&fstFile, &secFile, &channel);
+	} else if (choose == "2") {
 		cout << "Введите название первого музыкального файла: ";
 		getline(cin, fstFile);
 		cout << "Введите название второго музыкального файла: ";
 		getline(cin, secFile);
-		getAmplitudesArray(&fstFile, &secFile, &channels);
+		compareWAVfiles(&fstFile, &secFile);
 	}
 	return 0;
 
