@@ -20,7 +20,27 @@ void compareMono(vector<short> *fstArr, vector<short> *secArr);
 void compareStereo(vector<short> *leftFstArr, vector<short> *rightFstArr, vector<short> *leftSecArr, vector<short> *rightSecArr);
 void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare);
 void readAmplitudesFromWAV(string fileName, SF_INFO fileInfo,  vector <short>& vectorToAmplitudes);
+void getAmplitudesFromWavToTXT(string *fileName);
 
+void getAmplitudesFromWavToTXT(string *fileName) {
+	string fileNameToTXT = *fileName;
+	SF_INFO fileInfo;
+	SNDFILE *fileWAV = sf_open(fileName->c_str(), SFM_READ, &fileInfo);
+	if (fileWAV == NULL) {
+		cout << "Данный файл не существует или недоступен! Программа будет прекращена\n";
+		return;
+	}
+	vector <short> arrayWAV;
+	readAmplitudesFromWAV(*fileName, fileInfo, arrayWAV);
+	fileNameToTXT.insert(fileName->length() - 3, "dat");
+	ofstream fileWithAmplitudes(fileNameToTXT.c_str(), ios::out);
+	if (fileWithAmplitudes.is_open()) {
+		for (int i = 0; i <= arrayWAV.size(); i++)
+		{
+			fileWithAmplitudes << arrayWAV.at(i) << endl;
+		}
+	}
+}
 
 /* Функция, отвечающая за сравнение двух wav файлов.
 На вход поступает две строки, которые являются названиями файлов. После их получения происходит 
@@ -232,7 +252,7 @@ void compareStereo(vector<short> *leftFstArr, vector<short> *rightFstArr, vector
 
 int main(int argc, char* argv[]) {
 	setlocale(LC_ALL, "rus");
-	string compare = "compare", compareWAV = "compareWAV";
+	string compare = "compare", compareWAV = "compareWAV", amplitudes = "amplitudes";
 	if (argc == 0) {
 		goto noARGS;
 	} else if (argc > 1 && !compare.compare(argv[1])) {
@@ -249,7 +269,7 @@ int main(int argc, char* argv[]) {
 	}
 	noARGS:
 	string fstFile = "", secFile = "", choose = "", channels = "";
-	cout << "Выберите сравнение\nДвух файлов с амплитудами - 1\nДвух WAV файлов - 2\nВыбор: ";
+	cout << "Выберите сравнение\nДвух файлов с амплитудами - 1\nДвух WAV файлов - 2\nПолучить амплитуды из файла WAV - 3\nВыбор: ";
 	getline(cin, choose);
 	if (choose == "1") {
 		cout << "Введите название первого файла для сравнения: ";
@@ -266,6 +286,10 @@ int main(int argc, char* argv[]) {
 		cout << "Введите название второго музыкального файла: ";
 		getline(cin, secFile);
 		compareWAVfiles(&fstFile, &secFile);
+	} else if (choose == "3") {
+		cout << "Введите название музыкального файла типа WAV: ";
+		getline(cin, fstFile);
+		getAmplitudesFromWavToTXT(&fstFile);
 	}
 	return 0;
 
