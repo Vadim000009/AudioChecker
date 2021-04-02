@@ -33,9 +33,10 @@ void getAmplitudesFromWavToTXT(string *fileName) {
 	vector <short> arrayWAV;
 	readAmplitudesFromWAV(*fileName, fileInfo, arrayWAV);
 	fileNameToTXT.insert(fileName->length() - 3, "dat");
+	fileNameToTXT.erase(fileNameToTXT.length() - 3, fileNameToTXT.length());
 	ofstream fileWithAmplitudes(fileNameToTXT.c_str(), ios::out);
 	if (fileWithAmplitudes.is_open()) {
-		for (int i = 0; i <= arrayWAV.size(); i++)
+		for (int i = 0; i < arrayWAV.size(); i++)
 		{
 			fileWithAmplitudes << arrayWAV.at(i) << endl;
 		}
@@ -69,8 +70,6 @@ void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare) {
 			return;
 		}
 	}
-	sf_close(fstFileWAV);
-	sf_close(secFileWAV);
 	vector <short> fstArr;
 	vector <short> secArr;
 	thread fst(readAmplitudesFromWAV, *fstFileToCompare, fstFileInfo, ref(fstArr));
@@ -79,9 +78,6 @@ void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare) {
 	sec.join();
 	if (fstFileChannels == 1) {
 		compareMono(&fstArr, &secArr);
-		cout << "Очистка памяти\n";
-		for (auto arr : fstArr) delete &arr;
-		for (auto arr : secArr) delete &arr;
 	} else if (fstFileChannels == 2) {
 		vector <short> leftFstArr, rightFstArr, leftSecArr, rightSecArr;
 		bool channel = false;
@@ -97,12 +93,10 @@ void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare) {
 			}
 		}
 		compareStereo(&leftFstArr, &rightFstArr, &leftSecArr, &rightSecArr);
-		cout << "Очистка памяти\n";
-		for (auto arr : leftFstArr) delete &arr;
-		for (auto arr : rightFstArr) delete &arr;
-		for (auto arr : leftSecArr) delete &arr;
-		for (auto arr : rightSecArr) delete &arr;
+		// Доделать очистку памяти векторов
 	}
+	sf_close(fstFileWAV);
+	sf_close(secFileWAV);
 	cout << "Сравнение файлов прошло успешно!\n";
 }
 
@@ -156,10 +150,8 @@ void getAmplitudesArray(string *fstFileToCompare, string *secFileToCompare, int 
 			monoChannelSecFile.push_back(amplitude);
 		}
 		cout << "Чтение прошло успешно!\n" << "Количество амплитуд первого файла: " << monoChannelFstFile.size() <<
-			". Количество амплитуд второго файла: " << monoChannelSecFile.size();
+			". Количество амплитуд второго файла: " << monoChannelSecFile.size() << "\n";
 		compareMono(&monoChannelFstFile, &monoChannelSecFile);
-		for (auto arr : monoChannelFstFile) delete &arr;
-		for (auto arr : monoChannelSecFile) delete &arr;
 	} else if (*channels == 2) {
 		vector <short> leftChannelFstFile;
 		vector <short> rightChannelFstFile;
@@ -190,10 +182,6 @@ void getAmplitudesArray(string *fstFileToCompare, string *secFileToCompare, int 
 		cout << "Чтение прошло успешно!\n" << "Количество амплитуд первого файла: " << leftChannelFstFile.size() + rightChannelFstFile.size() <<
 			". Количество амплитуд второго файла: " << leftChannelSecFile.size() + rightChannelSecFile.size();
 		compareStereo(&leftChannelFstFile, &rightChannelFstFile, &leftChannelSecFile, &rightChannelSecFile);
-		for (auto arr : leftChannelFstFile) delete &arr;
-		for (auto arr : rightChannelFstFile) delete &arr;
-		for (auto arr : leftChannelSecFile) delete &arr;
-		for (auto arr : rightChannelSecFile) delete &arr;
 	}
 	fstOpen.close();
 	secOpen.close();
@@ -291,6 +279,7 @@ int main(int argc, char* argv[]) {
 		getline(cin, fstFile);
 		getAmplitudesFromWavToTXT(&fstFile);
 	}
+	system("pause");
 	return 0;
 
 }
