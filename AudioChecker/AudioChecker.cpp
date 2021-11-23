@@ -10,17 +10,25 @@
 #include <thread>
 #define BLOCK_SIZE 2
 
-using doubleByte = unsigned char;
 using namespace std;
 
+struct UNIPRIM {
+	unsigned short amplitude;
+	unsigned char counting;
+	unsigned char stationing;
+	UNIPRIM(unsigned short a, unsigned char b, unsigned char c) : amplitude(a), counting(b), stationing(c) {}
+};
+
+
 // Прототипы функций. Функция Point - для вычисления промежуточных точек, пока не подключена.
-typedef unsigned char(__cdecl *Point) (short a, short b, short c, short *d);
+typedef unsigned char(__cdecl *Point) (unsigned short a, unsigned short b, unsigned char c, char16_t *d);
 void getAmplitudesArray(string *fstFileToCompare, string *secFileToCompare, int *channels);
 void compareMono(vector<short> *fstArr, vector<short> *secArr);
 void compareStereo(vector<short> *leftFstArr, vector<short> *rightFstArr, vector<short> *leftSecArr, vector<short> *rightSecArr);
 void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare);
 void readAmplitudesFromWAV(string fileName, SF_INFO fileInfo,  vector <short>& vectorToAmplitudes);
 void getAmplitudesFromWavToTXT(string *fileName);
+void createWAVfromYNIPRIM(string *fileName);
 
 void getAmplitudesFromWavToTXT(string *fileName) {
 	string fileNameToTXT = *fileName;
@@ -238,6 +246,104 @@ void compareStereo(vector<short> *leftFstArr, vector<short> *rightFstArr, vector
 	fileResult.close();
 }
 
+void createWAVfromYNIPRIM(string *fileName) {
+	cout << "Считывание файла с УНИПРИМами из '" << *fileName << "' \n";
+	ifstream file(*fileName, ios::binary);
+	vector <UNIPRIM> doubleBytesFromFile;
+	if (file.is_open()) { // Если файл открыт
+		/*	Мы читаем размер файла от 0 и до его конца,
+			записываем размер файла и переводим указатель на начало файла	*/
+		file.seekg(0, file.end);
+		int length = file.tellg();
+		file.seekg(0, file.beg);
+		/*	Затем, объявляем переменные для считывания*/
+		unsigned char amplitude; // Должен быть short
+		unsigned char counting, stationing;
+		/*	И объявляем массив char, в котором будет весь наш файл в бинарном виде*/
+		char * buffer = new char[length];
+		file.read(buffer, length);
+		/*	После чего закрываем наш файл, так как более он нам не понадобится (уже после ветвления)*/
+		for (int i = 0; i < length; i = i + 4) {
+			amplitude = (buffer[i + 1] << 8) + buffer[i]; // Сдвиг на 8 бит для записи хвостика
+			//amplitude = (buffer[i] << 8) + buffer[i + 1]; // Сдвиг на 8 бит для записи хвостика
+			counting = buffer[i + 2];	// Чтение количества отсчётов
+			stationing = buffer[i + 3];	// Чтение движения
+			doubleBytesFromFile.push_back(UNIPRIM(amplitude, counting, stationing));
+		// Если 0 отсчётов, то прямой нет
+		// затем указание куда - вниз
+		} 
+		delete[] buffer; // Удаление буфера, так как всё в векторе
+	} else {
+		cout << "Ошибка в названии файла! Выход из программы\n";
+		exit(1);
+	}
+	file.close();
+	// на вход поступает массив
+	// вектор в аппендом
+	HMODULE handle = LoadLibrary(L"dfen.dll");
+	Point procAmplitudes = (Point)GetProcAddress(handle, "F@enik"); 
+	vector <unsigned short> amplits;
+	if (procAmplitudes != NULL) {
+		for (int i = 0; i <= doubleBytesFromFile.size() - 1; i++) {
+			amplits.push_back(doubleBytesFromFile[i].amplitude);
+			if (doubleBytesFromFile[i].amplitude == doubleBytesFromFile[i + 1].amplitude && doubleBytesFromFile[i].counting != 0) {
+				for (int j = 0; j < doubleBytesFromFile[i].counting; j++) {
+					amplits.push_back(doubleBytesFromFile[i].amplitude);
+				}
+			} else if (doubleBytesFromFile[i].counting > 0) {
+				unsigned char posFst = doubleBytesFromFile[i].amplitude, posSec = doubleBytesFromFile[i + 1].amplitude; // должен быть short
+				unsigned char samples = doubleBytesFromFile[i].counting;
+				/* Костыль. Если количество амплитуд = 1 или 2, то dll падает с ошибкой divByZero */
+				if (samples == 2 || samples == 4 || samples == 6 || samples == 8 || samples == 10) {
+					samples++;
+				} else if (samples == 1) {
+					amplits.push_back(posFst); // добавляем одну амплитуду и выходим
+				}
+				/* тут конец костыля */
+				if (samples > 2) {
+					char16_t* finalAmp = new char16_t[samples];
+					procAmplitudes(posFst, posSec, samples, &finalAmp[0]);
+					for (int j = 0; j < samples - 1; j++) {
+						amplits.push_back(finalAmp[j]);
+					}
+					amplits.push_back(doubleBytesFromFile[i + 1].amplitude);
+					delete [] finalAmp;
+				}
+			}
+		}
+		// при 50 значениях должно быть 109, а получается 104
+	} else {
+		cout << "Ошибка хандла dll. Проверьте наличие dll в папке (dfen.dll)\n";
+		exit(1);
+	}
+	// восстановить и сохранить в вектор
+	cout << "Считывание заголовка из 'K1.txt'\n";
+	ifstream fileK1("K1.txt", ios::binary);
+	vector <unsigned char> K1;
+	if (fileK1.is_open()) {
+		fileK1.seekg(0, fileK1.end);
+		int length = fileK1.tellg();
+		fileK1.seekg(0, fileK1.beg);
+		char * buffer = new char[length];
+		fileK1.read(buffer, length);
+		for (int i = 0; i < length; i++) {
+			K1.push_back(buffer[i]);
+		}
+	} else {
+		cout << "Ошибка в открытии файла 'K1.txt'\n";
+		exit(1);
+	}
+	K1.insert(K1.end(), amplits.begin(), amplits.end());
+	ofstream saveFile;
+	saveFile.open("S1+K1.wav");
+	for (auto val : K1) {
+		saveFile.write(reinterpret_cast<const char *>(&val), sizeof(unsigned char));
+	}
+	saveFile.close();
+	cout << "Успех! Результат в файле 'S1+K1.wav'\n";
+	// сохранить в файл формата txt
+}
+
 int main(int argc, char* argv[]) {
 	setlocale(LC_ALL, "rus");
 	string compare = "compare", compareWAV = "compareWAV", amplitudes = "amplitudes";
@@ -257,7 +363,7 @@ int main(int argc, char* argv[]) {
 	}
 	noARGS:
 	string fstFile = "", secFile = "", choose = "", channels = "";
-	cout << "Выберите сравнение\nДвух файлов с амплитудами - 1\nДвух WAV файлов - 2\nПолучить амплитуды из файла WAV - 3\nВыбор: ";
+	cout << "Выберите сравнение\nДвух файлов с амплитудами - 1\nДвух WAV файлов - 2\nПолучить амплитуды из файла WAV - 3\nВосстановить амплитуды из указанного файла - 4\nВыбор: ";
 	getline(cin, choose);
 	if (choose == "1") {
 		cout << "Введите название первого файла для сравнения: ";
@@ -278,6 +384,11 @@ int main(int argc, char* argv[]) {
 		cout << "Введите название музыкального файла типа WAV: ";
 		getline(cin, fstFile);
 		getAmplitudesFromWavToTXT(&fstFile);
+	}
+	else if (choose == "4") {
+		cout << "Укажите название файла: ";
+		getline(cin, fstFile);
+		createWAVfromYNIPRIM(&fstFile);
 	}
 	system("pause");
 	return 0;
