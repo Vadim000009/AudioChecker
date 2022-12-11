@@ -29,7 +29,7 @@ void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare);
 void readAmplitudesFromWAV(string fileName, SF_INFO fileInfo,  vector <short>& vectorToAmplitudes);
 void getAmplitudesFromWavToTXT(string *fileName);
 void createWAVfromPRIMITIV(string *fileName, string *serviceFileName);
-void testNewTable(string *fileName);
+//void testNewTable(string *fileName); // Функция для проверки других таблиц, в доработке
 
 void getAmplitudesFromWavToTXT(string *fileName) {
 	string fileNameToTXT = *fileName;
@@ -71,7 +71,7 @@ void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare) {
 	int fstFileChannels = fstFileInfo.channels, secFileChannels = secFileInfo.channels,
 		fstFileFrames = fstFileInfo.frames, secFileFrames = secFileInfo.frames;
 	if (fstFileChannels != secFileChannels) {
-		cout << "Количество каналов сравниваемых файлов не равно! В файлах:\n\t" <<
+		cout << "Количество каналов сравниваемых файлов не равно! В файлах:\n\t" << 
 			fstFileName << " содержится " << fstFileChannels << " каналов.\n\t" <<
 			secFileName << " содержится " << secFileChannels << " каналов.\n";
 		if (fstFileFrames < secFileFrames) {
@@ -204,9 +204,13 @@ void compareMono(vector<short> *fstArr, vector<short> *secArr) {
 	int count = 0, size = fstArr->size();
 	if (fileResult.is_open()) {
 		for (int i = 0; i != size; i++) {
-			if (fstArr->at(i) != secArr->at(i)) {
-				fileResult << "Позиция\t" << i << " значения\t" << fstArr->at(i) <<"\tи\t" << secArr->at(i) << endl;
-				count++;
+			try {
+				if (fstArr->at(i) != secArr->at(i)) {
+					fileResult << "Позиция\t" << i << " значения\t" << fstArr->at(i) << "\tи\t" << secArr->at(i) << endl;
+					count++;
+				}
+			} catch (std::out_of_range e) {
+				cout << "\nВыход за границы массива\n";
 			}
 		}
 		double resultCompare = (100 / (double)size) * (double)count;
@@ -248,7 +252,7 @@ void compareStereo(vector<short> *leftFstArr, vector<short> *rightFstArr, vector
 }
 
 void createWAVfromPRIMITIV(string *fileName, string *serviceFileName) {
-	cout << "Считывание файла с УНИПРИМами из '" << *fileName << "' \n";
+	cout << "Считывание файла с ПРИМИТИВами из '" << *fileName << "' \n";
 	ifstream file(*fileName, ios::binary);
 	vector <PRIMITIV> doubleBytesFromFile;
 	if (file.is_open()) { // Если файл открыт
@@ -281,6 +285,8 @@ void createWAVfromPRIMITIV(string *fileName, string *serviceFileName) {
 	file.close();
 	HMODULE handle = LoadLibrary(L"dfen.dll");
 	Point procAmplitudes = (Point)GetProcAddress(handle, "F@enik"); 
+	//HMODULE handle = LoadLibrary(L"waterMets.dll");
+	//Point procAmplitudes = (Point)GetProcAddress(handle, "waterSint"); 
 	vector <unsigned short> amplits;
 	if (procAmplitudes != NULL) {
 		for (int i = 0; i <= doubleBytesFromFile.size() - 2; i++) { // Отсчёт идёт с 0, а при -1 всё равно идёт заход на size()
@@ -290,25 +296,36 @@ void createWAVfromPRIMITIV(string *fileName, string *serviceFileName) {
 			//10 – предшествующий параметр рассматривается как S1max=S2min  и  наоборот 	
 			// S1min =  S2max, а количество отсчетов  определяет расстояние между ними 
 			//11 - S1max = S2max    или  S1min = S2min
-			if (static_cast<int> (doubleBytesFromFile[i].counting) > 0) {
+			if (static_cast<int> (doubleBytesFromFile[i].stationing) >= 1) {
+				if (static_cast<int> (doubleBytesFromFile[i].counting) >= 1) {
+					for (int j = 0; j < static_cast<int> (doubleBytesFromFile[i].stationing); j++) {
+						amplits.push_back(doubleBytesFromFile[i].amplitude);
+					}
+				}
+				else if (static_cast<int> (doubleBytesFromFile[i].stationing) > 1) {
+					for (int j = 0; j < static_cast<int> (doubleBytesFromFile[i].stationing) - 1; j++) {
+						amplits.push_back(doubleBytesFromFile[i].amplitude);
+					}
+				}
+			}
+			if (static_cast<int> (doubleBytesFromFile[i].counting) > 1) {
 				unsigned char posFst = doubleBytesFromFile[i].amplitude, posSec = doubleBytesFromFile[i + 1].amplitude; // должен быть short
 				unsigned char samples = doubleBytesFromFile[i].counting;
-				if (static_cast<int> (samples) >= 2) {
-					samples++;
-					char16_t* finalAmp = new char16_t[samples];
+				if (static_cast<int> (samples) > 2) {
+					//samples++;
+					char16_t* finalAmp = new char16_t[samples + 1]{ 0 };
 					procAmplitudes(posFst, posSec, samples, &finalAmp[0]);
 					for (int j = 0; j < samples - 1; j++) {
 						amplits.push_back(finalAmp[j]);
 					}
 					delete[] finalAmp;
 				}
-					//amplits.push_back(doubleBytesFromFile[i + 1].amplitude); // при 50 значениях должно быть 109, а получается 104 - так работает
-			} else if (static_cast<int> (doubleBytesFromFile[i].stationing) > 1) {
-				for (int j = 0; j < static_cast<int> (doubleBytesFromFile[i].stationing); j++) {
-					amplits.push_back(doubleBytesFromFile[i].amplitude);
+				else if (static_cast<int> (samples) == 2) {
+					amplits.push_back(round((posFst + posSec) / 2));
 				}
 			}
 		}
+		amplits.push_back(doubleBytesFromFile[doubleBytesFromFile.size() - 1].amplitude);
 	} else {
 		cout << "Ошибка хандла dll. Проверьте наличие dll в папке (dfen.dll)\n";
 		exit(1);
@@ -392,10 +409,51 @@ int main(int argc, char* argv[]) {
 	setlocale(LC_ALL, "rus");
 	string compare = "/c", compareWAV = "/cwav", amplitudes = "/amp", primitiv = "/p";
 	if (argc <= 1) {
-		goto noARGS;
+		string fstFile = "", secFile = "", choose = "", channels = "";
+		cout << "Выберите действие\nДвух файлов с амплитудами - 1\nДвух WAV файлов - 2\nПолучить амплитуды из файла WAV - 3\nВосстановить амплитуды из указанного файла - 4\nПосмотреть графики (Требуется Python) - 5\nВыбор: ";
+		getline(cin, choose);
+		if (choose == "1") {
+			cout << "Введите название первого файла для сравнения: ";
+			getline(cin, fstFile);
+			cout << "Введите название второго файла для сравнения: ";
+			getline(cin, secFile);
+			cout << "Укажите количество каналов аудио обоих файлов: ";
+			getline(cin, channels);
+			int channel = atoi(channels.c_str());
+			getAmplitudesArray(&fstFile, &secFile, &channel);
+		}
+		else if (choose == "2") {
+			cout << "Введите название первого музыкального файла: ";
+			getline(cin, fstFile);
+			cout << "Введите название второго музыкального файла: ";
+			getline(cin, secFile);
+			compareWAVfiles(&fstFile, &secFile);
+		}
+		else if (choose == "3") {
+			cout << "Введите название музыкального файла типа WAV: ";
+			getline(cin, fstFile);
+			getAmplitudesFromWavToTXT(&fstFile);
+		}
+		else if (choose == "4") {
+			cout << "Укажите название файла структур: ";
+			getline(cin, fstFile);
+			cout << "Укажите название файла, содержащий служебную информацию: ";
+			getline(cin, secFile);
+			createWAVfromPRIMITIV(&fstFile, &secFile);
+		}
+		else if (choose == "5") {
+			cout << "Укажите название певрого файла: ";
+			getline(cin, fstFile);
+			cout << "Укажите название второго файла: ";
+			getline(cin, secFile);
+			getGraphsFromFile(&fstFile, &secFile);
+		}
+		system("pause");
+		return 0;
 	} else {
 		if (argc > 1 && !compare.compare(argv[1])) {
 			// для проверки /c list1.dat list2.dat
+		PySec:											// Удалить
 			string fstFileToCompare = argv[2];
 			string secFileToCompare = argv[3];
 			int channels = atoi(argv[4]);
@@ -418,59 +476,4 @@ int main(int argc, char* argv[]) {
 		}
 		return 0;
 	}
-	noARGS:
-	string fstFile = "", secFile = "", choose = "", channels = "";
-	cout << "Выберите действие\nДвух файлов с амплитудами - 1\nДвух WAV файлов - 2\nПолучить амплитуды из файла WAV - 3\nВосстановить амплитуды из указанного файла - 4\nПосмотреть графики (Требуется Python) - 5\nВыбор: ";
-	getline(cin, choose);
-	if (choose == "1") {
-		cout << "Введите название первого файла для сравнения: ";
-		getline(cin, fstFile);
-		cout << "Введите название второго файла для сравнения: ";
-		getline(cin, secFile);
-		cout << "Укажите количество каналов аудио обоих файлов: ";
-		getline(cin, channels);
-		int channel = atoi(channels.c_str());
-		getAmplitudesArray(&fstFile, &secFile, &channel);
-	} else if (choose == "2") {
-		cout << "Введите название первого музыкального файла: ";
-		getline(cin, fstFile);
-		cout << "Введите название второго музыкального файла: ";
-		getline(cin, secFile);
-		compareWAVfiles(&fstFile, &secFile);
-	} else if (choose == "3") {
-		cout << "Введите название музыкального файла типа WAV: ";
-		getline(cin, fstFile);
-		getAmplitudesFromWavToTXT(&fstFile);
-
-		/*//удалить
-	fstStp:
-		fstFile = "sintezPrimitiv.wav";
-		getAmplitudesFromWavToTXT(&fstFile);
-		goto secStp;*/
-
-	} else if (choose == "4") {
-		cout << "Укажите название файла структур: ";
-		getline(cin, fstFile);
-		cout << "Укажите название файла, содержащий служебную информацию: ";
-		getline(cin, secFile);
-		createWAVfromPRIMITIV(&fstFile, &secFile);
-
-		/*// Удалить
-		goto fstStp;*/
-
-	} else if (choose == "5") {
-		cout << "Укажите название певрого файла: ";
-		getline(cin, fstFile);
-		cout << "Укажите название второго файла: ";
-		getline(cin, secFile);
-		getGraphsFromFile(&fstFile, &secFile);
-		
-		/*// удалить
-		secStp: 
-		fstFile = "t1s.dat", secFile = "sintezPrimitiv.dat";
-		getGraphsFromFile(&fstFile, &secFile);*/
-	} 
-	system("pause");
-	return 0;
-
 }
