@@ -8,6 +8,10 @@
 *.sln.docstates
 *.dat
 *.wav
+AudioChecker+.cpp
+*.hat
+*.uni
+*.zip
 desktop.ini
 
 # User-specific files (MonoDevelop/Xamarin Studio)
