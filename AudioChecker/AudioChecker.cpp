@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 #include <stdlib.h>
+#include <map>
 
 using namespace std;
 
@@ -45,7 +46,7 @@ void compareStereo(vector<short> *leftFstArr, vector<short> *rightFstArr, vector
 void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare);
 void readAmplitudesFromWAV(string *fileName, SF_INFO fileInfo,  vector <short>& vectorToAmplitudes);
 int getAmplitudesFromWavToTXT(string *fileName);
-int createWAVfromPRIMITIV(string *fileName, string *serviceFileName);
+int createWAVfromPRIMITIV(string *fileName, string *serviceFileName, bool debugInfo);
 int createFragments(string *fileName);
 int getHeadingFrowWavFile(string *fileName);
 int sintezFragments(string *fileName);
@@ -281,7 +282,7 @@ std::streampos fileSize(ifstream& file) {
 
 /*Функция синтеза из S и K файла
 Требуется dll DFEN или FENIKS*/
-int createWAVfromPRIMITIV(string *fileName, string *serviceFileName) {
+int createWAVfromPRIMITIV(string *fileName, string *serviceFileName, bool debugInfo) {
 	cout << "Считывание файла с ПРИМИТИВами из '" << *fileName << "' \n";
 	ifstream readSFile(*fileName, ios::binary);				// Открываем файл в бинарном представлении
 	vector <PRIMITIV> doubleBytesFromFile;					// Создаём вектор со структурой примитива
@@ -312,9 +313,48 @@ int createWAVfromPRIMITIV(string *fileName, string *serviceFileName) {
 	Point procAmplitudes = (Point)GetProcAddress(handle, "F@enik");		// Загружаем адрес процедуры
 	//vector <uint16_t> amplits;										// Создаём результирующий вектор
 	vector <uint8_t> amplits;											// Создаём результирующий вектор
+	int size = doubleBytesFromFile.size(), byStraight = 0, byOblique = 0;
+	map<int, int> points, straights, obliques;
 	if (procAmplitudes != NULL) {
 		for (long i = 0; i <= (long)doubleBytesFromFile.size() - 2; i++) { // Отсчёт идёт с 0, а при -1 всё равно идёт заход на size()
 			amplits.push_back(doubleBytesFromFile[i].amplitude);			// Добавляем первую амплитуду 
+			if (debugInfo) {
+				auto incrementValuePoints = [&](int key) {
+					auto it = points.find(key);
+					if (it != points.end()) {
+						++it->second; // Инкремент значения, если элемент уже присутствует
+					}
+					else {
+						points[key] = 1; // Добавление нового элемента с начальным значением 0
+					}
+				};
+
+				auto incrementValueStraights = [&](int key) {
+					auto it = straights.find(key);
+					if (it != straights.end()) {
+						++it->second;
+					}
+					else {
+						straights[key] = 1;
+					}
+				};
+
+				auto incrementValueObliques = [&](int key) {
+					auto it = obliques.find(key);
+					if (it != obliques.end()) {
+						++it->second;
+					}
+					else {
+						obliques[key] = 1;
+					}
+				};
+
+				incrementValuePoints(static_cast<int> (doubleBytesFromFile[i].amplitude));
+				incrementValueStraights(static_cast<int> (doubleBytesFromFile[i].straight));
+				incrementValueObliques(static_cast<int> (doubleBytesFromFile[i].oblique));
+				byStraight = byStraight + static_cast<int> (doubleBytesFromFile[i].straight);
+				byOblique = byOblique + static_cast<int> (doubleBytesFromFile[i].oblique);
+			}
 			//00 – пусто не используется
 			//01 – отсутствует первый параметр отсчеты только от  S1 до  S3;
 			//10 – предшествующий параметр рассматривается как S1max=S2min  и  наоборот 	
@@ -355,6 +395,32 @@ int createWAVfromPRIMITIV(string *fileName, string *serviceFileName) {
 		return 1;
 	}
 	FreeLibrary(handle);													// Высвобождаем библиотеку
+
+	if (debugInfo) {
+		ofstream file("debugFile.txt");
+
+		auto count = [&](map<int, int> ma) {
+			int sum = 0;
+			for (const auto& pair : ma) {
+				sum += pair.second; // Добавление значения из текущего элемента
+			}
+			return sum;
+		};
+
+		auto writeMap = [&](map<int, int> ma) {
+			for (const auto& pair : ma) {
+				file << pair.first << ": " << pair.second << std::endl;
+			}
+		};
+
+		file << "Информация по файлу " << *fileName << "\r\nКоличество характерных точек " << size << "\r\nЗначения и их количество\n";
+		writeMap(points);
+		file << "Информация по отсчётам по прямой (" << straights.size() << " количество, " << count(straights) << " сумма)\r\n";
+		writeMap(straights);
+		file << "Информация по отсчётам по косой (" << obliques.size() << " количество, " << count(obliques) << " сумма)\r\n";
+		writeMap(obliques);
+		file.close();
+	}
 
 	cout << "Считывание заголовка из " << *serviceFileName << "\n";			
 	ifstream fileK1(*serviceFileName, ios::binary);							// Открываем бинарный файл
@@ -577,7 +643,7 @@ int main(int argc, char* argv[]) {
 			getline(cin, fstFile);
 			cout << "Укажите название файла, содержащий служебную информацию: ";
 			getline(cin, secFile);
-			createWAVfromPRIMITIV(&fstFile, &secFile);
+			createWAVfromPRIMITIV(&fstFile, &secFile, false);
 		} else if (choose == "5") {
 			cout << "Укажите название певрого файла: ";
 			getline(cin, fstFile);
@@ -618,7 +684,7 @@ int main(int argc, char* argv[]) {
 		} else if (argc > 1 && !primitiv.compare(argv[1])) {					// для проверки - /p s1.txt k1.txt
 			string filewithPrimitivs = argv[2];
 			string serviceFile = argv[3];
-			createWAVfromPRIMITIV(&filewithPrimitivs, &serviceFile);
+			createWAVfromPRIMITIV(&filewithPrimitivs, &serviceFile, false);
 		}
 		return 0;
 	}
