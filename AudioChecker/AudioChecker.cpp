@@ -1,6 +1,5 @@
 ﻿#define _CRT_SECURE_NO_WARNINGS	// не видеть ругательств компилятора
 #define ENABLE_SNDFILE_WINDOWS_PROTOTYPES 1
-#define BLOCK_SIZE 2
 #include <windows.h>
 #include "sndfile.h"
 #include <iostream>
@@ -139,13 +138,13 @@ void readAmplitudesFromWAV(string *fileName, SF_INFO fileInfo, vector <short>& v
 		cout << "Файл не найден! Работа прекращена";
 		return;
 	} else {
-		byte *buffer = new byte[BLOCK_SIZE];
+		byte *buffer = new byte[1];
 		int count, k = 0;
-		while (count = static_cast<byte>(sf_read_raw(fileWAV, &buffer[0], BLOCK_SIZE)) > 0) {
+		while (count = static_cast<uint8_t>(sf_read_raw(fileWAV, &buffer[0], 1)) > 0) {
 			vectorToAmplitudes.push_back(buffer[0]);
 		}
 		sf_close(fileWAV);
-		cout << "Файл " << fileName << " успешно прочитан!\n";
+		cout << "Файл " << *fileName << " успешно прочитан!\n";
 	}
 }
 
@@ -625,9 +624,13 @@ int main(int argc, char* argv[]) {
 			cout << "Укажите количество каналов аудио обоих файлов: ";
 			getline(cin, channels);
 			int channel = atoi(channels.c_str());
-			fstFile = "source.dat";
-			secFile = "sintezPrimitiv.dat";
+			//a1:
+			//int channel = 1;
+			//fstFile = "sintezPrimitiv.dat";
+			//secFile.insert(secFile.length() - 3, "dat");
+			//secFile.erase(secFile.length() - 3, secFile.length());
 			getAmplitudesArray(&fstFile, &secFile, &channel);
+			//goto a2;
 		} else if (choose == "2") {
 			cout << "Введите название первого музыкального файла: ";
 			getline(cin, fstFile);
@@ -638,6 +641,8 @@ int main(int argc, char* argv[]) {
 			cout << "Введите название музыкального файла типа WAV: ";
 			getline(cin, fstFile);
 			getAmplitudesFromWavToTXT(&fstFile);
+			//secFile = fstFile;
+			//goto a1;
 		} else if (choose == "4") {
 			cout << "Укажите название файла структур: ";
 			getline(cin, fstFile);
@@ -649,6 +654,7 @@ int main(int argc, char* argv[]) {
 			getline(cin, fstFile);
 			cout << "Укажите название второго файла: ";
 			getline(cin, secFile);
+		//a2:
 			getGraphsFromFile(&fstFile, &secFile);
 		} else if (choose == "6") {
 			cout << "Укажите название файла, их которого необходимо извлечь заголовок: ";
