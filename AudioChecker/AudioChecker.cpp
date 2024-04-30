@@ -10,17 +10,9 @@
 #include <thread>
 #include <stdlib.h>
 #include <map>
+#include <queue>
 
 using namespace std;
-
-struct PRIMITIV {
-	//uint16_t amplitude;	// Должен быть unsigned short
-	uint8_t amplitude;
-	uint8_t straight;
-	uint8_t oblique;
-	//PRIMITIV(uint16_t amplitude, uint8_t straight, uint8_t oblique) : amplitude(amplitude), straight(straight), oblique(oblique) {}
-	PRIMITIV(uint8_t amplitude, uint8_t straight, uint8_t oblique) : amplitude(amplitude), straight(straight), oblique(oblique) {}
-};
 
 typedef struct {
 	char     chunkId[4];
@@ -38,20 +30,49 @@ typedef struct {
 	uint32_t subchunk2Size;
 } WavHeader;
 
-//typedef unsigned char(__cdecl *Point) (unsigned int size, unsigned int adrArr, unsigned int sizeArr, unsigned int newArr, unsigned int sizeFinal, unsigned int waterMet);
-void getAmplitudesArray(string *fstFileToCompare, string *secFileToCompare, int *channels);
+void getFilesWithAmplitudes(string *fileFirstName, string *fileSecondName, int *channels, bool* mode);
+void compareRAWData(uint8_t* fileFirstCompare, int fileFirstCompareSize, string fileFirstCompareName, uint8_t *fileSecondCompare, string fileSecondCompareName, int *channels, bool *mode);
+void comparatorArrayRAW(uint8_t *arrayFirst, uint8_t *arraySecond, ofstream &fileCompare, int *arraySize, int cycleStart);
 void compareMono(vector<short> *fstArr, vector<short> *secArr);
 void compareStereo(vector<short> *leftFstArr, vector<short> *rightFstArr, vector<short> *leftSecArr, vector<short> *rightSecArr);
 void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare);
-void readAmplitudesFromWAV(string *fileName, SF_INFO fileInfo,  vector <short>& vectorToAmplitudes);
-int getAmplitudesFromWavToTXT(string *fileName);
-int createWAVfromPRIMITIV(string *fileName, string *serviceFileName, bool debugInfo);
+void readAmplitudesFromWAVTypeUnsignedByte(string *fileName, SF_INFO fileInfo, vector <uint8_t>& vectorToAmplitudes);
+void readAmplitudesFromWAV(string *fileName, SF_INFO fileInfo, vector <uint8_t>& vectorToAmplitudes);
+int getFileWithAmplitudesToText(string *fileName, bool *mode);
+int sintezWavFromUNIPRIM(string *fileName, string *serviceFileName, bool debugInfo);
 int createFragments(string *fileName);
 int getHeadingFrowWavFile(string *fileName);
 int sintezFragments(string *fileName);
-streampos fileSize(ifstream& file);
+streampos fileGetSize(ifstream& file);
+int createFramesFromWAV(string *fileName);
+uint8_t* fileReadRAW(string *fileName, int* fileSize);
 
-int getAmplitudesFromWavToTXT(string *fileName) {
+int getFileWithAmplitudesToText(string *fileName, bool *mode) {
+	string fileResultName;
+	uint8_t* arrayAmplitudes;
+	WavHeader wav;
+	if (mode) fileResultName = *fileName + ".wdata";
+	else fileResultName = "wavtxt.wdata";
+	ifstream fileAmplitudes(*fileName, ios::in | ios::binary);
+	if (fileAmplitudes.is_open()) {
+		fileAmplitudes.read((char*)&wav, sizeof(WavHeader));
+		cout << "Считывание файла " << *fileName << "\n";
+		arrayAmplitudes = new uint8_t[wav.chunkSize];
+		for (int i = 0; i < wav.chunkSize; i++)
+			fileAmplitudes.read((char*)&arrayAmplitudes[i], 1);
+	} else {
+		cout << "Не удалось открыть файл " << fileName << "\n";
+		return -1;
+	}
+	ofstream fileResult(fileResultName, ios::out);
+	if (fileResult.is_open()) {
+		for (int i = 0; i < wav.chunkSize; i++)
+			fileResult.write((char*)arrayAmplitudes[i], 1); //"%o\n"
+		cout << "Данные записаны в файл " << fileResultName << "\n";
+	} else {
+		cout << "Не удалось создать файл\n";
+	}
+
 	string fileNameToTXT = *fileName;
 	SF_INFO fileInfo;
 	SNDFILE *fileWAV = sf_open(fileName->c_str(), SFM_READ, &fileInfo);
@@ -65,7 +86,7 @@ int getAmplitudesFromWavToTXT(string *fileName) {
 	fileNameToTXT.erase(fileNameToTXT.length() - 3, fileNameToTXT.length());
 	ofstream fileWithAmplitudes(fileNameToTXT.c_str(), ios::out);
 	if (fileWithAmplitudes.is_open()) {
-		for (long i = 0; i < (long) arrayWAV.size(); i++) {
+		for (long i = 0; i < (long)arrayWAV.size(); i++) {
 			fileWithAmplitudes << arrayWAV.at(i) << endl;
 		}
 	}
@@ -73,7 +94,7 @@ int getAmplitudesFromWavToTXT(string *fileName) {
 }
 
 /* Функция, отвечающая за сравнение двух wav файлов.
-На вход поступает две строки, которые являются названиями файлов. После их получения происходит 
+На вход поступает две строки, которые являются названиями файлов. После их получения происходит
 их считывание в массив и последующая процедура вызова сравнения.
 @fstFileToCompare и @secFileToCompare являются строками с названиями файла.
 По итогу работы, в месте запуска программы создаётся файл compareWAV.dat с резульататми сравнения двух файлов. */
@@ -86,29 +107,27 @@ void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare) {
 		cout << "Один из файлов указан НЕВЕРНО! Программа будет прекращена\n";
 		return;
 	}
-	int fstFileChannels = fstFileInfo.channels, secFileChannels = secFileInfo.channels,
-		fstFileFrames = fstFileInfo.frames, secFileFrames = secFileInfo.frames;
-	if (fstFileChannels != secFileChannels) {
-		cout << "Количество каналов сравниваемых файлов не равно! В файлах:\n\t" << 
-			fstFileToCompare << " содержится " << fstFileChannels << " каналов.\n\t" <<
-			secFileToCompare << " содержится " << secFileChannels << " каналов.\n";
-		if (fstFileFrames < secFileFrames) {
+	if (fstFileInfo.channels != secFileInfo.channels) {
+		cout << "Количество каналов сравниваемых файлов не равно! В файлах:\n\t" <<
+			fstFileToCompare << " содержится " << fstFileInfo.channels << " каналов.\n\t" <<
+			secFileToCompare << " содержится " << secFileInfo.channels << " каналов.\n";
+		if (fstFileInfo.frames < secFileInfo.frames) {
 			cout << "Амплитуд в файле " << secFileToCompare << " больше чем в " << fstFileToCompare << ". Программа будет прекращена.";
 			return;
 		}
 	}
-	vector <short> fstArr;
-	vector <short> secArr;
+	vector <uint8_t> fstArr;
+	vector <uint8_t> secArr;
 	thread fst(readAmplitudesFromWAV, fstFileToCompare, fstFileInfo, ref(fstArr));
 	thread sec(readAmplitudesFromWAV, secFileToCompare, secFileInfo, ref(secArr));
 	fst.join();
 	sec.join();
-	if (fstFileChannels == 1) {
+	if (fstFileInfo.channels == 1) {
 		compareMono(&fstArr, &secArr);
-	} else if (fstFileChannels == 2) {
+	} else if (fstFileInfo.channels == 2) {
 		vector <short> leftFstArr, rightFstArr, leftSecArr, rightSecArr;
 		bool channel = false;
-		for (long i = 0; i < (long) fstArr.size(); i++) {
+		for (long i = 0; i < (long)fstArr.size(); i++) {
 			if (channel == false) {
 				leftFstArr.push_back(fstArr.at(i));
 				leftSecArr.push_back(secArr.at(i));
@@ -132,14 +151,14 @@ void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare) {
 данного аудиофайла.
 В самой же процедуре считывание файла происходит с помощью библиотеки "libsndfile". 
 Руководство по данной библиотеке - http://www.mega-nerd.com/libsndfile/api.html */
-void readAmplitudesFromWAV(string *fileName, SF_INFO fileInfo, vector <short>& vectorToAmplitudes) {
+void readAmplitudesFromWAV(string *fileName, SF_INFO fileInfo, vector <uint8_t>& vectorToAmplitudes) {
 	SNDFILE *fileWAV = sf_open(fileName->c_str(), SFM_READ, &fileInfo);
 	if (fileWAV == NULL) {
 		cout << "Файл не найден! Работа прекращена";
 		return;
 	} else {
-		byte *buffer = new byte[1];
-		int count, k = 0;
+		uint8_t *buffer = new uint8_t[1];
+		int count = 0;
 		while (count = static_cast<uint8_t>(sf_read_raw(fileWAV, &buffer[0], 1)) > 0) {
 			vectorToAmplitudes.push_back(buffer[0]);
 		}
@@ -148,75 +167,88 @@ void readAmplitudesFromWAV(string *fileName, SF_INFO fileInfo, vector <short>& v
 	}
 }
 
-/* Функция, получающая амплитуды из двух файлов и загоняющая их в векторный массив.
-@fstFileToCompare и @secFileToCompare являются указателями на файлы,из которых будут полученны амплитуды.
-@channels является указателем на количество каналов аудио. 
-Возможны случаи получения для моно и стерео. */
-void getAmplitudesArray(string *fstFileToCompare, string *secFileToCompare, int *channels) {
-	ifstream fstOpen, secOpen;
-	fstOpen.open(fstFileToCompare->c_str(), ios_base::in);
-	secOpen.open(secFileToCompare->c_str(), ios_base::in);
-	short amplitude = 0;
-	if (!(fstOpen.is_open() && secOpen.is_open())) {
-		cout << "Ошибка открытия файла! Программа будет закрыта\n";
-		fstOpen.close();
-		secOpen.close();
+void readAmplitudesFromWAVTypeUnsignedByte(string *fileName, SF_INFO fileInfo, vector <uint8_t>& vectorToAmplitudes) {
+	SNDFILE *fileWAV = sf_open(fileName->c_str(), SFM_READ, &fileInfo);
+	if (fileWAV == NULL) {
+		cout << "Файл не найден! Работа прекращена";
+		return;
+	} else {
+		uint8_t *buffer = new uint8_t[1];
+		int count;
+		while (count = static_cast<uint8_t>(sf_read_raw(fileWAV, &buffer[0], 1)) > 0) {
+			vectorToAmplitudes.push_back(buffer[0]);
+		}
+		sf_close(fileWAV);
+		cout << "Файл " << *fileName << " успешно прочитан!\n";
+	}
+}
+
+/* Функция, получающая амплитуды из двух файлов и переводит их в два массива, которые в последующем сравниваются.
+@fileFirstName и @fileSecondName являются указателями на файлы,из которых будут полученны амплитуды.
+@channels является указателем на количество каналов аудио, @mode является указанием на то, в каком режиме получается файл. */
+void getFilesWithAmplitudes(string *fileFirstName, string *fileSecondName, int *channels, bool *mode) {
+	int fileFirstSize = 0, fileSecondSize = 0;
+	uint8_t* fileFirstRAW = fileReadRAW(fileFirstName, &fileFirstSize);
+	if (fileFirstRAW == NULL) return;
+	uint8_t* fileSecondRAW = fileReadRAW(fileSecondName, &fileSecondSize);
+	cout << "Чтение прошло успешно!\nКоличество амплитуд первого файла: " << fileFirstSize << "\nКоличество амплитуд второго файла: " << fileSecondSize << "\n";
+	if (fileFirstSize != fileSecondSize) {
+		cout << "Файлы не совпадают по количеству амплитуд\n";
 		return;
 	}
-	if (*channels == 1) {
-		vector <short> monoChannelFstFile;
-		vector <short> monoChannelSecFile;
-		// Необходимо сделать параллельным считывание из обоих файлов
-		while (!fstOpen.eof()) {
-			fstOpen >> amplitude;
-			monoChannelFstFile.push_back(amplitude);
+	compareRAWData(fileFirstRAW, fileFirstSize, *fileFirstName, fileSecondRAW, *fileSecondName, channels, mode);
+}
+
+void compareRAWData(uint8_t* fileFirstCompare, int fileFirstCompareSize, string fileFirstCompareName, uint8_t *fileSecondCompare, string fileSecondCompareName, int *channels, bool *mode) {
+	string fileResultCompareName;
+	double fileResultComparePercent = 0;
+	int count = 0;
+
+	if (*mode)	fileResultCompareName = "ResultCompare.cdat";
+	else fileResultCompareName = fileFirstCompareName + "_CompareWith_" + fileSecondCompareName + ".cdat";
+
+	ofstream fileResultCompare(fileResultCompareName, ios::app | ios::out);
+	if (fileResultCompare.is_open()) {
+		if (*channels == 1) {
+			comparatorArrayRAW(fileFirstCompare, fileSecondCompare, fileResultCompare, &fileFirstCompareSize, 0);
+		} else if (*channels == 2) {
+			fileResultCompare << "Сравнение канала 1\n";
+			comparatorArrayRAW(fileFirstCompare, fileSecondCompare, fileResultCompare, &fileFirstCompareSize, 0);
+			fileResultCompare << "Сравнение канала 2\n";
+			comparatorArrayRAW(fileFirstCompare, fileSecondCompare, fileResultCompare, &fileFirstCompareSize, 2);
 		}
-		while (!secOpen.eof()) {
-			secOpen >> amplitude;
-			monoChannelSecFile.push_back(amplitude);
-		}
-		cout << "Чтение прошло успешно!\n" << "Количество амплитуд первого файла: " << monoChannelFstFile.size() <<
-			". Количество амплитуд второго файла: " << monoChannelSecFile.size() << "\n";
-		compareMono(&monoChannelFstFile, &monoChannelSecFile);
-	} else if (*channels == 2) {
-		vector <short> leftChannelFstFile;
-		vector <short> rightChannelFstFile;
-		vector <short> leftChannelSecFile;
-		vector <short> rightChannelSecFile;
-		bool channelFst = true, channelSec = true;
-		// Необходимо сделать параллельным считывание из обоих файлов
-		while (!fstOpen.eof()) {
-			fstOpen >> amplitude;
-			if (channelFst) {
-				leftChannelFstFile.push_back(amplitude);
-				channelFst = false;
-			} else {
-				rightChannelFstFile.push_back(amplitude);
-				channelFst = true;
-			}
-		}
-		while (!secOpen.eof()) {
-			secOpen >> amplitude;
-			if (channelSec) {
-				leftChannelSecFile.push_back(amplitude);
-				channelSec = false;
-			} else {
-				rightChannelSecFile.push_back(amplitude);
-				channelSec = true;
-			}
-		}
-		cout << "Чтение прошло успешно!\n" << "Количество амплитуд первого файла: " << leftChannelFstFile.size() + rightChannelFstFile.size() <<
-			". Количество амплитуд второго файла: " << leftChannelSecFile.size() + rightChannelSecFile.size();
-		compareStereo(&leftChannelFstFile, &rightChannelFstFile, &leftChannelSecFile, &rightChannelSecFile);
 	}
-	fstOpen.close();
-	secOpen.close();
+	else {
+		cout << "Ошибка создания файла!";
+	}
+	fileResultCompare.close();
+}
+
+/* Функция сравнения двух массивов. На переданный указатель файла сразу же записывает результат с результатом в виде процентного соотношения.
+@arrayFirst и @arraySecond являются указателями на первый и второвый массив со значениями.
+@fileCompare является указателем на результирующий файл.
+@arraySize и @delta являются указателями размерность массива и шаг цикла (0 или 2). */
+void comparatorArrayRAW(uint8_t *arrayFirst, uint8_t *arraySecond, ofstream &fileCompare, int *arraySize, int delta) {
+	double fileResultComparePercent = 0, arraySizeToCount = 0, count = 0;								// Объявляем переменные
+
+	if (delta > 1) arraySizeToCount = *arraySize / delta;												// Если цикл начинается 2, то делим длину на два
+	else arraySizeToCount = *arraySize;																	// Иначе указатель на полный размер
+
+	for (long i = 0; i < (long)*arraySize; i = i + delta) {												// Цикл с условием шага из параметров
+		if (arrayFirst[i] != arraySecond[i]) {															// Если не равны - записываем
+			fileCompare << "Позиция\t" << i << " значение\t" << arrayFirst[i] << "\tи\t" << arraySecond[i] << "\n";
+			count++;																					// Итерируем счётчик
+		}
+	}
+	fileResultComparePercent = (100 / arraySizeToCount) * count;										// Вычисляем разницу по среднему арифметическому
+	fileCompare << "По результатам сравнения, различие составило " << setprecision(3) << fileResultComparePercent << "%" << "\n";
 }
 
 /* Функция сравнения амплитуд в моно режиме. Создаёт файл resultMono.dat с результатами сравнения и указанием различия в определённых точках,
 а так же в процентном соотношении об их разнице.
+Кандидат на удаление
 @fstArr и @secArr являются указателями на массивы векторов со значениями амплитуд. */
-void compareMono(vector<short> *fstArr, vector<short> *secArr) {
+void compareMono(vector<uint8_t> *fstArr, vector<uint8_t> *secArr) {
 	ofstream fileResult("resultMono.dat", ios::app | ios::out);
 	int count = 0, size = fstArr->size();
 	if (fileResult.is_open()) {
@@ -240,7 +272,7 @@ void compareMono(vector<short> *fstArr, vector<short> *secArr) {
 
 /* Функция сравнения амплитуд в стерео режиме. Создаёт файл resultMono.dat с результатами сравнения и указанием различия в определённых точках,
 а так же в процентном соотношении об их разнице.
-@leftFstArr и @rightFstArr являются указателями на массивы векторов первого массива со значениями амплитуд. 
+Кандидат на удаление
 @leftSecArr и @rightSecArr являются указателями на массивы векторов второго массива со значениями амплитуд. */
 void compareStereo(vector<short> *leftFstArr, vector<short> *rightFstArr, vector<short> *leftSecArr, vector<short> *rightSecArr) {
 	ofstream fileResult("resultStereo.dat", ios::app | ios::out);
@@ -279,175 +311,118 @@ std::streampos fileSize(ifstream& file) {
 	return fsize;
 }
 
+uint8_t* fileReadRAW(string *fileName, int *fileSize) {
+	ifstream fileRAW(*fileName, ios::binary);				// Открываем файл в бинарном представлении
+	*fileSize = fileGetSize(fileRAW);						// Задаём длину считываемого файла 
+	uint8_t* fileRead = new uint8_t[*fileSize];				// Создаем массив считываемого файла
+	if (fileRAW.is_open()) {								// Если файл есть
+		fileRAW.read((char*)fileRead, *fileSize);			// Считываем весь файл согласно его длине
+		fileRAW.close();									// Закрываем файл
+		return fileRead;
+	}
+	else {
+		cout << "Ошибка в названии файла " << *fileName << "\n";
+		return NULL;
+	}
+}
+
 /*Функция синтеза из S и K файла
 Требуется dll DFEN или FENIKS*/
-int createWAVfromPRIMITIV(string *fileName, string *serviceFileName, bool debugInfo) {
-	cout << "Считывание файла с ПРИМИТИВами из '" << *fileName << "' \n";
-	ifstream readSFile(*fileName, ios::binary);				// Открываем файл в бинарном представлении
-	vector <PRIMITIV> doubleBytesFromFile;					// Создаём вектор со структурой примитива
-	if (readSFile.is_open()) {								// Если файл открыт
-		long length = fileSize(readSFile);					// Узнаём размерность файла
-		char * buffer = (char*)malloc(length * sizeof(int8_t));
-		readSFile.read(buffer, length);						// Считываем файл
+int createWAVfromPRIMITIV(string *fileStructuresName, string *fileHeadingName, bool debugInfo) {
+	string fileDebug = "degug_sintez_" + *fileStructuresName + ".txt";
+	LPCWSTR DLLName = L"FenVod.dll";																	// Имя DLL
+	LPCSTR DLLProcedureName = "F@enVod";																// Имя процедуры в DLL
+	string fileOutputName = "sintezPrimitiv.wav";														// Имя файла, в который будет записан результат
+	int fileStructuresSize = 0, fileSintezSize = 2000, fileHeadingSize = 0;								// Переменные с длинами тех или иных файлов
 
-		//uint16_t amplitude;								// Должен быть на 16 байт
-		uint8_t amplitude;									// Так как сейчас работаем на 8 байт
-		uint8_t straight, oblique;							// Из условия
-		for (int i = 0; i < length; i = i + 4) {			// начинаем записывать массив в структуру
-			amplitude = (buffer[i + 1] << 8) + buffer[i];	// Сдвиг на 8 бит для записи хвостика (в случае 1 байта бесполезен) (читывать информацию необходимо задом наперёд, т.е. вначале второе, потом первое)
-			//amplitude = buffer[i];							// считываем 8 байт
-			straight = buffer[i + 2];						// Записываем количество отсчётов по прямой
-			oblique = buffer[i + 3];						// Записываем количество отсчётов по косой
-			doubleBytesFromFile.push_back(PRIMITIV(amplitude, straight, oblique));	// Записываем полученную структуру в вектор
-		} 
-		free(buffer);										// Удаление буфера, так как всё в векторе
-	} else {
-		cout << "Ошибка в названии файла! Выход из программы\n";
-		return 1;
+	cout << "Считывание файла с ПРИМИТИВами из '" << *fileStructuresName << "' \n";						// -- Считыванием файла со структурами --
+	uint8_t* fileStructures = fileReadRAW(fileStructuresName, &fileStructuresSize);						// Процесс считывания
+	if (fileStructures == NULL) return -1;
+	for (long i = 0; i < fileStructuresSize; i = i + 4) {												// Цикл для высчитывания результирующего массива
+		UINT8 temporaryNumber = 1 + (uint8_t)fileStructures[i + 2] + (uint8_t)fileStructures[i + 3];	// Считываем первую амплитуду + по прямой + по косой
+		fileSintezSize = fileSintezSize + temporaryNumber;												// Итоговая переменная, в которую записывается суммированный результат
 	}
-	readSFile.close();										// Закрываем файл
 
-	typedef void(__cdecl *Point) (uint32_t amplitudeFst, uint32_t amplitudeSec, uint32_t samples, uint16_t *arrayResult);	// Прототип процедуры
-	HMODULE handle = LoadLibrary(L"dfen.dll");							// Ищем DLL в папке с программой
-	Point procAmplitudes = (Point)GetProcAddress(handle, "F@enik");		// Загружаем адрес процедуры
-	//vector <uint16_t> amplits;										// Создаём результирующий вектор
-	vector <uint8_t> amplits;											// Создаём результирующий вектор
-	int size = doubleBytesFromFile.size(), byStraight = 0, byOblique = 0;
-	map<int, int> points, straights, obliques;
-	if (procAmplitudes != NULL) {
-		for (long i = 0; i <= (long)doubleBytesFromFile.size() - 2; i++) { // Отсчёт идёт с 0, а при -1 всё равно идёт заход на size()
-			amplits.push_back(doubleBytesFromFile[i].amplitude);			// Добавляем первую амплитуду 
-			if (debugInfo) {
-				auto incrementValuePoints = [&](int key) {
-					auto it = points.find(key);
-					if (it != points.end()) {
-						++it->second; // Инкремент значения, если элемент уже присутствует
-					}
-					else {
-						points[key] = 1; // Добавление нового элемента с начальным значением 0
-					}
-				};
+	cout << "Считывание заголовка из " << *fileHeadingName << "\n";										// -- Считыванием файла с заголовком --
+	uint8_t*  fileHeading = fileReadRAW(fileHeadingName, &fileHeadingSize);								// Процесс считывания
+	if (fileHeading == NULL) return -1;
 
-				auto incrementValueStraights = [&](int key) {
-					auto it = straights.find(key);
-					if (it != straights.end()) {
-						++it->second;
-					}
-					else {
-						straights[key] = 1;
-					}
-				};
-
-				auto incrementValueObliques = [&](int key) {
-					auto it = obliques.find(key);
-					if (it != obliques.end()) {
-						++it->second;
-					}
-					else {
-						obliques[key] = 1;
-					}
-				};
-
-				incrementValuePoints(static_cast<int> (doubleBytesFromFile[i].amplitude));
-				incrementValueStraights(static_cast<int> (doubleBytesFromFile[i].straight));
-				incrementValueObliques(static_cast<int> (doubleBytesFromFile[i].oblique));
-				byStraight = byStraight + static_cast<int> (doubleBytesFromFile[i].straight);
-				byOblique = byOblique + static_cast<int> (doubleBytesFromFile[i].oblique);
-			}
-			//00 – пусто не используется
-			//01 – отсутствует первый параметр отсчеты только от  S1 до  S3;
-			//10 – предшествующий параметр рассматривается как S1max=S2min  и  наоборот 	
-			// S1min =  S2max, а количество отсчетов  определяет расстояние между ними 
-			//11 - S1max = S2max    или  S1min = S2min
-			if (static_cast<int> (doubleBytesFromFile[i].oblique) >= 1) {								// Если что-то то есть по косой от 1 и более
-				if (static_cast<int> (doubleBytesFromFile[i].straight) >= 1) {							// И что-то есть по прямой от 1 и более
-					for (int j = 0; j < static_cast<int> (doubleBytesFromFile[i].oblique); j++) {		// Тогда пишем косой
-						amplits.push_back(doubleBytesFromFile[i].amplitude);
-					}
-				} else if (static_cast<int> (doubleBytesFromFile[i].oblique) > 1) {						// Иначе если более 1 по косой
-					for (int j = 0; j < static_cast<int> (doubleBytesFromFile[i].oblique) - 1; j++) {	// Пишем по косой с учётом одного вычета
-						amplits.push_back(doubleBytesFromFile[i].amplitude);
-					}
-				}
-			}
-			if (static_cast<int> (doubleBytesFromFile[i].straight) > 1) {								// Если более 1 по прямой
-				uint8_t posFst = doubleBytesFromFile[i].amplitude, posSec = doubleBytesFromFile[i + 1].amplitude; // должен быть uint16_t
-				uint8_t samples = doubleBytesFromFile[i].straight;
-				if (static_cast<int> (samples) > 2 && posFst + 1 != posSec && posSec + 1 != posFst && posSec != posFst) {
-					uint16_t* finalAmp = new uint16_t[samples + 1]{ 0 };
-					procAmplitudes(posFst, posSec, samples, &finalAmp[0]);
-					for (int j = 0; j < samples - 1; j++) {
-						amplits.push_back(finalAmp[j]);
-					}
-					delete[] finalAmp;
-				}
-				else if (static_cast<int> (samples) == 2 || posFst + 1 == posSec || posSec + 1 == posFst || posSec == posFst) {
-					for (int i = 0; i < samples; i++) {
-						amplits.push_back(round((posFst + posSec) / 2));
-					}
-				}
-			}
+	//typedef int(__cdecl * Point) (uint8_t* amplitudeSize, uint8_t *fileWithStructures, UINT32 *fileWithStructuresSize, uint8_t* arrayForResult, UINT32 *arrayFroResultSize);	// Прототип процедуры
+	//typedef int(__cdecl * Point) (uint8_t *amplitudeSize, uint8_t *fileWithStructures, uint32_t fileWithStructuresSize, uint8_t* arrayForResult, uint32_t arrayFroResultSize, int *wm);	// Прототип процедуры
+	typedef int(__cdecl * Point) (uint8_t *amplitudeSize, uint8_t *fileWithStructures, int *fileWithStructuresSize, uint8_t* arrayForResult, int *arrayFroResultSize, int *wm);	// Прототип процедуры
+	HMODULE DLLHandle = LoadLibrary(DLLName);															// Ищем DLL в папке с программой
+	Point DLLProcedure = (Point)GetProcAddress(DLLHandle, DLLProcedureName);							// Загружаем адрес процедуры
+	uint8_t* fileSintez = new uint8_t[fileSintezSize]{ 0 };												// Создаем результирующйи массив с величиной, высчитанной в цикле
+	if (DLLProcedure != NULL) {																			// -- Процесс синтеза из структур --
+		uint8_t amplitudeSize = 1;	// Если 11 - получаем количество возможных бит для водяного знака	// Задаём величину амплитуды (1,2,4)
+		int wm = 1;
+		uint8_t fileSintez[100]{ 0 };
+		//int response = procAmplitudes(amplitudeSize, fileStructures, fileStructuresSize, fileSintez, fileSintezSize);
+		//uint16_t response = DLLProcedure(&amplitudeSize, &fileStructures[0], (uint32_t) fileStructuresSize, &fileSintez[0], (uint32_t) fileSintezSize, &wm);
+		uint16_t response = DLLProcedure(&amplitudeSize, &fileStructures[0], &fileStructuresSize, &fileSintez[0], &fileSintezSize, &wm);
+		for (int i = 0; i < fileSintezSize; i++) {
+			printf("%o\n", fileSintez[i]);
 		}
-		amplits.push_back(doubleBytesFromFile[doubleBytesFromFile.size() - 1].amplitude);				// Записываем последнюю амплитуду
-	} else {
-		cout << "Ошибка хандла dll. Проверьте наличие dll в папке (dfen.dll)\n";
-		return 1;
+		if (response < 0) {																				// Если с кодом ошибки
+			cout << "Ошибка " << response << "\n";														// Информируем
+		} else {
+			fileSintezSize = response;																	// Величина присваивается  длине результирующего массива
+		}
+	} else {																							// Если DLL не найдена
+		cout << "Нет хандла библиотеки " << DLLName << "\n";											// Оповещаем
+		return  1;																						// Выходим
 	}
-	FreeLibrary(handle);													// Высвобождаем библиотеку
+	FreeLibrary(DLLHandle);																				// Высвобождаем библиотеку
 
 	if (debugInfo) {
-		ofstream file("debugFile.txt");
+		map<int, int> valuesAmplitudes, valuesStraights, valuesObliques;
+		for (int i = 0; i < fileStructuresSize; i = i + 4) {
+			valuesAmplitudes[fileStructures[i]]++;
+			valuesStraights[fileStructures[i + 2]]++;
+			valuesObliques[fileStructures[i + 3]]++;
+		}
 
-		auto count = [&](map<int, int> ma) {
+		ofstream file(fileDebug);
+		locale mylocale("");
+		file.imbue(mylocale);
+		auto countQuantity = [&](map<int, int> ma) {
 			int sum = 0;
-			for (const auto& pair : ma) {
+			for (const auto& pair : ma)
 				sum += pair.second; // Добавление значения из текущего элемента
-			}
 			return sum;
 		};
 
-		auto writeMap = [&](map<int, int> ma) {
-			for (const auto& pair : ma) {
-				file << pair.first << ": " << pair.second << std::endl;
-			}
+		auto countQuality = [&](map<int, int> ma) {
+			int sum = 0;
+			for (const auto& pair : ma)
+				if (pair.first != 0)
+					sum += pair.first * pair.second; // Добавление значения из текущего элемента
+			return sum;
 		};
 
-		file << "Информация по файлу " << *fileName << "\r\nКоличество характерных точек " << size << "\r\nЗначения и их количество\n";
-		writeMap(points);
-		file << "Информация по отсчётам по прямой (" << straights.size() << " количество, " << count(straights) << " сумма)\r\n";
-		writeMap(straights);
-		file << "Информация по отсчётам по косой (" << obliques.size() << " количество, " << count(obliques) << " сумма)\r\n";
-		writeMap(obliques);
+		auto writeMap = [&](map<int, int> map) {
+			for (const auto& pair : map)
+				file << pair.first << ": " << pair.second << std::endl;
+		};
+
+		file << "Информация по файлу " << *fileStructuresName << "\nКоличество характерных точек " << fileStructuresSize / 4 << "\nЗначения и их количество\n";
+		writeMap(valuesAmplitudes);
+		file << "\nИнформация по отсчётам по прямой\nвсего " << valuesStraights.size() << ", \nсумма в виде количества " << countQuantity(valuesStraights) << ", \nсумма в виде количества, умноженного на значение " << countQuality(valuesStraights) << "\n";
+		writeMap(valuesStraights);
+		file << "\nИнформация по отсчётам по косой\nвсего " << valuesObliques.size() << ", \nсумма в виде количества " << countQuantity(valuesObliques) << ", \nсумма в виде количества, умноженного на значение " << countQuality(valuesObliques) << "\n";
+		writeMap(valuesObliques);
 		file.close();
 	}
 
-	cout << "Считывание заголовка из " << *serviceFileName << "\n";			
-	ifstream fileK1(*serviceFileName, ios::binary);							// Открываем бинарный файл
-	vector <uint8_t> K1;													// Итоговый вектор с файлом
-	if (fileK1.is_open()) {													// Если открыт
-		long length = fileSize(fileK1);										// Узнаём размер
-		char * buffer = new char[length];									// Считываем его в массив чаров
-		fileK1.read(buffer, length);										// Считали указанную длину
-		for (long i = 0; i < length; i++) {
-			K1.push_back(buffer[i]);										// Сохранили его в вектор
-		}
+	ofstream fileOutput(fileOutputName, std::ios::out | std::ios::binary);
+	if (fileOutput.is_open()) {
+		fileOutput.write(reinterpret_cast<const char*>(fileHeading), fileHeadingSize);
+		fileOutput.write(reinterpret_cast<const char*>(fileSintez), fileSintezSize);
+		fileOutput.close();
 	} else {
-		cout << "Ошибка в открытии файла " << *serviceFileName << "\n";
+		cout << "Ошибка при записи файла" << fileOutputName << "\n";
 		return 1;
 	}
-	fileK1.close();															// Закрыли файл
-
-	K1.insert(K1.end(), amplits.begin(), amplits.end());					// Вставили в вектор с заголовком амплитуды
-	FILE* fileWav = fopen("sintezPrimitiv.wav", "wb");						// Создали итоговый файл
-	if (fileWav != NULL) {													// Если удалось
-		fwrite(K1.data(), sizeof(uint8_t), K1.size(), fileWav);				// Записали вектор в файл
-		fclose(fileWav);													// Закрыли файл
-		cout << "Данные успешно записаны в файл.\n";
-	} else {
-		cout << "Не удалось открыть файл для записи.\n";
-		return 1;
-	}
-	cout << "Успех! Результат в файле 'sintezPrimitiv.wav'\n";
 }
 
 // Запустить питон и передать как параметр два файла
@@ -459,11 +434,9 @@ void getGraphsFromFile(string *fstFile, string *secFile) {
 	system(command.c_str());
 }
 
-/*
-Функция для работы с dll фрагментации.
-На вход поступает ссылка на наименование файла или его абсолютный путь, если файл находится не в директории программы.
-Для работы необходима библиотека Fragm.
-*/
+/*	Функция для работы с dll фрагментации.
+	На вход поступает ссылка на наименование файла или его абсолютный путь, если файл находится не в директории программы.
+	Для работы необходима библиотека Fragm. */
 int createFragments(string *fileName) {
 	cout << "Считывание файла '" << *fileName << "' во фрагментации\n";
 	typedef int(__cdecl *Point) (
@@ -477,7 +450,7 @@ int createFragments(string *fileName) {
 	long length = 0;													// Длина понадобится в дальнейшем
 	char* arraySfile;													// Делаем указатель на массив с S файлом
 	if (file.is_open()) {												// Если файл открыт
-		length = fileSize(file);										// Узнаём размерность файла
+		length = fileGetSize(file);										// Узнаём размерность файла
 		arraySfile = (char*)malloc(length * sizeof(uint8_t));			// Создаём массив под данные
 		file.read(arraySfile, length);									// считываем в массив с динамической памятью
 	} else {
@@ -508,7 +481,7 @@ int createFragments(string *fileName) {
 	if (fragFile != NULL) {												// Если удалось создать
 		if (size == (unsigned long)-1) {
 			// не помню код ошибки
-		} else if (size == (unsigned long) -2) {
+		} else if (size == (unsigned long)-2) {
 			cout << "Файл имеет плохую структуру (0 по прямой, 0 по косой)\n";
 		} else {
 			length = size;												// Устанавливаем размер массива, так как он пришёл без ошибок
@@ -600,20 +573,186 @@ int getHeadingFrowWavFile(string *fileName) {
 	}
 }
 
+int createFramesFromWAV(string *fileName) {
+	FILE* fileWithHeader = fopen(fileName->c_str(), "rb");				// Считываем файл
+	WavHeader header;													// Создаём структуру. куда считываем
+	if (fileWithHeader != NULL) {
+		fread(&header, sizeof(WavHeader), 1, fileWithHeader);			// Чтение заголовка файла WAV
+		fclose(fileWithHeader);											// Закрываем файл
+		cout << "Файл успешно прочитан\n";
+	}
+	else {
+		cout << "Ошибка открытия файла\n";
+		return 1;
+	}
+	// Считываем его данные и заголовок
+
+	if (header.blockAlign == 1) vector <uint8_t> toQuant;
+	else if (header.blockAlign == 2) vector <uint16_t> toQuant;
+	else if (header.blockAlign == 3) vector <uint32_t> toQuant;
+
+	// На основе заголовка делаем разбиение (длина в частоту на время (от 1 до 5)
+	int sampleRateMul = 1;
+	int frameSize = header.sampleRate * sampleRateMul;
+	int size = ceil(header.chunkSize / frameSize);
+	string frameName = ".tun";		// Пока реализовываем для 1 канала, для двух необходимо иначе делить
+
+	SF_INFO fileInfo;
+	SNDFILE *fileWAV = sf_open(fileName->c_str(), SFM_READ, &fileInfo);
+	if (fileWAV == NULL) {
+		cout << "Данный файл не существует или недоступен! Программа будет прекращена\n";
+		return -1;
+	}
+	vector <uint8_t> arrayWAV;
+	int positionAfterFoundExtremum = 0, iteration = 1;
+	readAmplitudesFromWAVTypeUnsignedByte(fileName, fileInfo, arrayWAV);
+
+	if (header.numChannels == 1) {	// Уточням каналы (При 2 каналах необходимо чередование)
+		for (int i = 0; i < size; i++) {
+			ofstream fileWithAmplitudes(fileName->c_str() + frameName + to_string(i), ios::out);	// не сохраняет изменения
+			if (fileWithAmplitudes.is_open()) {
+				int tempFrameSize = frameSize;
+				for (int j = positionAfterFoundExtremum; j < frameSize * iteration; j++) {
+					fileWithAmplitudes << arrayWAV.at(j);
+					if (j == frameSize - 1) {
+						if (arrayWAV.at(j) > arrayWAV.at(j + 1)) {
+							frameSize = frameSize + 1;
+						}
+						else {
+							positionAfterFoundExtremum = positionAfterFoundExtremum + frameSize;
+							frameSize = tempFrameSize;
+							iteration++;
+							break;
+						}
+					}
+				}
+			}
+			// Придумать деление файла (берем по семпл рейт на множитель
+			// Сверяем. что следующая амплитуда будет выше предыдущей. Если да - закончить, иначе ищем.
+			fileWithAmplitudes.close();
+			// Каждый новый файл сохраняем как .tunN
+		}
+	}
+	// Уточняем размер SampleRate - частота, blockAlign - размер амплитуды и chunkSize - суммарный размер
+	return 0;
+}
+
+int createSegments(string *filename, int sampleRate, int *delta, bool *debugInfo) {
+	string fileOutputName = *filename, fileDebug = "debug_segments_" + *filename + "_.txt";																	// Имя для сегментов
+	fileOutputName.replace(filename->length() - 6, 6, "s1.comfra");										// Новое имя для первого сегмента
+	int fileComFragSize = 0, fileOutputNumber = 1, countSumComFrag = 0, countBetweenAddresses = 0, addressWithConditionDelta = 0;		// Размер файла, сумма отсчётов, счётчик записанных сегментов, счётчик амплитуд между адресами для сверки с дикретизацией
+	uint16_t addressComFrag = 0;																		// Адрес первого указателя
+	vector <uint16_t> addressesComFrag;																	// Создание массива с будующими адресами
+
+	cout << "Считывание файла совокупной фрагментации из '" << *filename << "' \n";
+	uint8_t* fileComFrag = fileReadRAW(filename, &fileComFragSize);										// -- Считыванием файла --
+	while (addressComFrag < fileComFragSize) {															// В цикле, пока не прочитаем весь файл (если файл кончился - указатель будет за пределы файла)
+		addressesComFrag.push_back(addressComFrag);														// Пишем первый адрес (по умолчанию 0)
+		uint16_t addressComFragPrevious = addressComFrag;												// Записываем предыдущий адрес (для проверки)
+		addressComFrag = fileComFrag[addressComFrag + 28] ^ (fileComFrag[addressComFrag + 29] << 8);	// Вырабатываем адресследующего сегмента
+		//countSumComFrag = countSumComFrag + (fileComFrag[addressComFrag + 10] ^ (fileComFrag[addressComFrag + 11] << 8)); // Должно быть 21504, но навскидку верно (21442)
+		if (addressComFragPrevious > addressComFrag) {													// Если указатель указывает назад, то оповещаем о проблеме
+			cout << "Ошибка адресации совокупного фрагмента\n";											// Оповещаем
+			return -1;
+		}
+	}
+
+	queue <bool> condition;																				// Условие, при котором мы говорим, что сенгмент не сегмент
+	vector <uint16_t> segmentsAddressesStartAndEnd;														// Вектор с началом и концом сегмента (кратный 2)
+	bool flag = false;																					// Флаг, для условия проверки
+	for (int i = 0; i < addressesComFrag.size(); i++) {
+		addressComFrag = addressesComFrag[i];															// Присваиваем адрес
+		uint16_t product = fileComFrag[addressComFrag + 6] - fileComFrag[addressComFrag + 2];			// Находим разницу между экстремумами
+		countBetweenAddresses = countBetweenAddresses + (fileComFrag[addressComFrag + 10] ^ (fileComFrag[addressComFrag + 11] << 8));	// счётчик суммы амплитуд между двумя адресами
+		countSumComFrag = countSumComFrag + (fileComFrag[addressComFrag + 10] ^ (fileComFrag[addressComFrag + 11] << 8));				// счётчик суммы амплитуд по ВСЕМУ файлу
+
+		if (debugInfo) if (product > *delta) addressWithConditionDelta++;								// Если врублен дебаг - записываем, сколько всего фрагментов удовлетворяет условию
+
+		if (product > *delta) condition.push(true);														// Если больше дельты, то ИС, говорим тру
+		else condition.push(false);																		// Если меньше дельты, то МИС, говорим фолс
+
+		if (condition.size() == 3) {																	// Если мы достигли 3 условий, то начинаем смотреть на совокупность
+			int conditionDelta = 0;
+			for (int i = 0; i < condition.size(); i++) {												// Цикл просмотра на то, кто тру и как много
+				if (condition.front() == true) conditionDelta++;										// Счётчик
+				condition.push(condition.front());														// вставляем вперёд наше следующее значение
+				condition.pop();																		// удаляем его (перебираем стопку тарелок)
+			}
+			condition.pop();																			// удаляем первое значение (результат в переменной)
+			if (conditionDelta > 2) {																	// Если больше 2 (то есть все 3 тру)
+				if (flag == false) {																	// И флаг фолс
+					countBetweenAddresses = 0;															// Начинаем отсчёт разницы адресов
+				}
+				if (countBetweenAddresses == 0) {														// Если разница 0
+					segmentsAddressesStartAndEnd.push_back(addressComFrag);								// Записываем адрес начала
+					flag = true;																		// Флаг переводим в тру
+				}
+			}
+			if (conditionDelta < 1 & countBetweenAddresses > sampleRate) {								// Если условие фолс и разница между больше дискретизации
+				segmentsAddressesStartAndEnd.push_back(addressComFrag);									// Записываем адрес
+				flag = false;																			// Флаг переводм в фолс
+			}
+			if (sampleRate * 2 >= countBetweenAddresses) {												// Если мы превысили 2 секунды
+				if (sampleRate * 2 == countBetweenAddresses) {											// Мб ровно на 2 секунде?
+					segmentsAddressesStartAndEnd.push_back(addressComFrag);								// Записываем адрес
+					flag = false;
+				}
+				if (sampleRate * 2 > countBetweenAddresses) {											// Если превысили, то заберём предыдущий адрес
+					segmentsAddressesStartAndEnd.push_back(addressesComFrag[i - 1]);					// Записываем адрес
+					flag = false;																		// Флаг переводм в фолс
+				}
+			}
+		}
+	}
+	segmentsAddressesStartAndEnd.push_back(addressComFrag);												// Записали конечный адрес для сегмента (стоит скорректировать)
+
+	if (*debugInfo) {
+		ofstream file(fileDebug);
+		locale mylocale("");
+		file.imbue(mylocale);
+
+		file << "Информация по файлу " << *filename << "\nРазмер файла " << fileComFragSize
+			<< "\nКоличество амплитуд по фрагментам " << countSumComFrag << "\nКоличество адресов, удовлетворяющих дельте " << addressWithConditionDelta
+			<< "\nВсего адресов " << addressesComFrag.size();
+
+	}
+
+	uint16_t* arrayComFragAdress = &addressesComFrag[0];
+	for (int i = 0; i < segmentsAddressesStartAndEnd.size(); i = i + 2) {
+		cout << "Запись файла фрагментов " << fileOutputName << "\n";
+		ofstream fileOutput(fileOutputName, std::ios::out | std::ios::binary);
+		if (fileOutput.is_open()) {
+			int end = segmentsAddressesStartAndEnd[i + 1] - segmentsAddressesStartAndEnd[i] + 1;
+			fileOutput.write(reinterpret_cast<const char*>(&arrayComFragAdress[segmentsAddressesStartAndEnd[i]]), end);
+			fileOutput.close();
+			fileOutputNumber++;
+			fileOutputName[fileOutputName.length() - 8] = *to_string(fileOutputNumber).c_str();
+		}
+		else {
+			cout << "Ошибка при записи файла" << fileOutputName << "\n";
+			return 1;
+		}
+	}
+	return 1;
+}
+
 int main(int argc, char* argv[]) {
 	setlocale(LC_ALL, "rus");
 	string compare = "/c", compareWAV = "/cwav", amplitudes = "/amp", primitiv = "/p";
 	if (argc <= 1) {
+		bool mode = false;
 		string fstFile = "", secFile = "", choose = "", channels = "";
 		start:
-		cout << "Выберите действие\nДвух файлов с амплитудами - 1\n" 
-			"Двух WAV файлов - 2\n" 
+		cout << "Выберите действие\nДвух файлов с амплитудами - 1\n"
+			"Двух WAV файлов - 2\n"
 			"Получить амплитуды из файла WAV - 3\n"
 			"Восстановить амплитуды из указанного файла - 4\n"
 			"Посмотреть графики (Требуется Python) - 5\n"
 			"Считать заголовок файла - 6\n"
 			"Получить фрагменты файла - 7\n"
 			"Восстановить из фрагментов структуры - 8\n"
+			"Создать из WAV кадры - 9\n"
+			"Создать из ComFrag Сегменты - 10\n"
 			"Выбор: ";
 		getline(cin, choose);
 		if (choose == "1") {
@@ -624,13 +763,7 @@ int main(int argc, char* argv[]) {
 			cout << "Укажите количество каналов аудио обоих файлов: ";
 			getline(cin, channels);
 			int channel = atoi(channels.c_str());
-			//a1:
-			//int channel = 1;
-			//fstFile = "sintezPrimitiv.dat";
-			//secFile.insert(secFile.length() - 3, "dat");
-			//secFile.erase(secFile.length() - 3, secFile.length());
-			getAmplitudesArray(&fstFile, &secFile, &channel);
-			//goto a2;
+			getFilesWithAmplitudes(&fstFile, &secFile, &channel, &mode);
 		} else if (choose == "2") {
 			cout << "Введите название первого музыкального файла: ";
 			getline(cin, fstFile);
@@ -640,21 +773,18 @@ int main(int argc, char* argv[]) {
 		} else if (choose == "3") {
 			cout << "Введите название музыкального файла типа WAV: ";
 			getline(cin, fstFile);
-			getAmplitudesFromWavToTXT(&fstFile);
-			//secFile = fstFile;
-			//goto a1;
+			getFileWithAmplitudesToText(&fstFile, &mode);
 		} else if (choose == "4") {
 			cout << "Укажите название файла структур: ";
 			getline(cin, fstFile);
 			cout << "Укажите название файла, содержащий служебную информацию: ";
 			getline(cin, secFile);
-			createWAVfromPRIMITIV(&fstFile, &secFile, false);
+			sintezWavFromUNIPRIM(&fstFile, &secFile, true);
 		} else if (choose == "5") {
 			cout << "Укажите название певрого файла: ";
 			getline(cin, fstFile);
 			cout << "Укажите название второго файла: ";
 			getline(cin, secFile);
-		//a2:
 			getGraphsFromFile(&fstFile, &secFile);
 		} else if (choose == "6") {
 			cout << "Укажите название файла, их которого необходимо извлечь заголовок: ";
@@ -668,6 +798,18 @@ int main(int argc, char* argv[]) {
 			cout << "Укажите файл, из которого необходимо восстановить\nфрагментированную ифнормацию: ";
 			getline(cin, fstFile);
 			sintezFragments(&fstFile);
+		} else if (choose == "9") { // TODO: переписать код под оптимизацию и сокращение строк, а так же сделать шаблоны
+			cout << "Укажите файл, будут созданы кадры: ";
+			getline(cin, fstFile);
+			createFramesFromWAV(&fstFile);
+		} else if (choose == "10") {
+			cout << "Укажите файл, из которого будет создан Сегмент: ";
+			getline(cin, fstFile);
+			cout << "Укажите дельту, по которой будут отсечения: ";
+			getline(cin, channels);
+			int delta = atoi(channels.c_str());
+			mode = true;
+			createSegments(&fstFile, 11025, &delta, &mode);
 		} else {
 			return 0;
 		}
@@ -675,22 +817,23 @@ int main(int argc, char* argv[]) {
 		system("cls");
 		goto start;
 	} else {
+		bool mode = true;
 		if (argc > 1 && !compare.compare(argv[1])) {							// для проверки - /c list1.dat list2.dat
 			string fstFileToCompare = argv[2];
 			string secFileToCompare = argv[3];
 			int channels = atoi(argv[4]);
-			getAmplitudesArray(&fstFileToCompare, &secFileToCompare, &channels);
+			getFilesWithAmplitudes(&fstFileToCompare, &secFileToCompare, &channels, &mode);
 		} else if (argc > 1 && !compareWAV.compare(argv[1])) {					// для проверки - /cwav 11.wav "Coldplay - Viva La Vida (low).wav"
 			string fstFileToCompare = argv[2];
 			string secFileToCompare = argv[3];
 			compareWAVfiles(&fstFileToCompare, &secFileToCompare);
 		} else if (argc > 1 && !amplitudes.compare(argv[1])) {					// для проверки - /amp s1.wav
 			string fileName = argv[2];
-			getAmplitudesFromWavToTXT(&fileName);
+			getFileWithAmplitudesToText(&fileName, &mode);
 		} else if (argc > 1 && !primitiv.compare(argv[1])) {					// для проверки - /p s1.txt k1.txt
 			string filewithPrimitivs = argv[2];
 			string serviceFile = argv[3];
-			createWAVfromPRIMITIV(&filewithPrimitivs, &serviceFile, false);
+			sintezWavFromUNIPRIM(&filewithPrimitivs, &serviceFile, false);
 		}
 		return 0;
 	}
