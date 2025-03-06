@@ -11,10 +11,13 @@
 #include <stdlib.h>
 #include <map>
 #include <queue>
+#include <limits>
+#include <cstdint>
 
 using namespace std;
 
-typedef struct {
+#pragma pack(push, 1)
+struct WavHeader {
 	char     chunkId[4];
 	uint32_t chunkSize;
 	char     format[4];
@@ -27,8 +30,9 @@ typedef struct {
 	uint16_t blockAlign;
 	uint16_t bitsPerSample;
 	char     subchunk2Id[4];
-	uint8_t subchunk2Size;
-} WavHeader;
+	uint32_t subchunk2Size;
+};
+#pragma pack(pop)
 
 int getFileWithAmplitudesToText(string *fileName, bool *mode);
 void compareWAVfiles(string *fstFileToCompare, string *secFileToCompare, bool *mode);
@@ -39,31 +43,64 @@ void comparatorArrayRAW(uint8_t *arrayFirst, uint8_t *arraySecond, ofstream &fil
 streampos fileGetSize(ifstream& file);
 uint8_t* fileReadWAVRAW(string *fileName, int *fileSize, WavHeader *wav);
 uint8_t* fileReadRAW(string *fileName, int *fileSize);
-int sintezWavFromUNIPRIM(string *fileStructuresName, string *fileHeadingName, bool debugInfo);
+int synthesizeWavFromUNIPRIM(string& fileStructuresName, const string& fileHeadingName, bool debugInfo);
 void getGraphsFromFile(string *fstFile, string *secFile);
 int createFragments(string *fileName);
 int sintezFragments(string *fileName);
-int getHeadingFrowWavFile(string *fileName);
+bool getWavHeaderFromFile(const string& fileName);
 int createFramesFromWAV(string *fileName);
-int createSegments(string *filename, int sampleRate, int *delta, bool *debugInfo);
+int createSegmentsA(string *filename, int sampleRate, int *delta, bool *debugInfo, bool *mode);
+int createSegmentsB(string *filename, int sampleRate, int *delta, bool *debugInfo, bool *mode);
+
+using Byte = uint8_t;
+using ByteVector = vector<Byte>;
+using DLLFunction = int(__cdecl*)(int32_t amplitudeSize, Byte* fileWithStructures, int* fileWithStructuresSize, Byte* arrayForResult, int* arrayForResultSize);
+
+string changeFileName(const string &fileName, const string &extension, bool typeOfChange) {
+	string result = fileName;
+	size_t dotPosition = result.find_last_of('.');
+	if (typeOfChange) {	// true - меняем окончание, false - дописываем перед началом
+		if (dotPosition == string::npos) result += '.' + extension;				// Если точка не найдена, добавляем новое расширение
+		else result = result.substr(0, dotPosition + 1) + extension;				// Заменяем расширение
+	}
+	else {
+		if (dotPosition == string::npos) result += extension;					// Если точка не найдена, просто добавляем строку в конец
+		else result.insert(dotPosition, extension);									// Вставляем строку перед последней точкой
+	}
+	return result;
+}
+
 
 int getFileWithAmplitudesToText(string *fileName, bool *mode) {
-	string fileResultName;																					// Имя файла
-	int fileSize = 0;																						// Размер файла
-	WavHeader wav{};																						// Пустая структура (будет заполнена в функции)
-	if (mode) fileResultName = *fileName + ".rawav";														// Если режим не консоли - такое имя
-	else fileResultName = "wavtxt.rawav";																	// Иначе такое
-	uint8_t* arrayWAVRAWAmplitudes = fileReadWAVRAW(fileName, &fileSize, &wav);								// Обращаемся к функции для получения амплитуд
-	ofstream fileResult(fileResultName, ios::out);															// Открываем запись файла
-	if (fileResult.is_open()) {																				// Если получиилось
-		fileResult.write(reinterpret_cast<const char*>(arrayWAVRAWAmplitudes), wav.chunkSize - 32);			// Пишем файл без шапки (-32 в конце)
+	string fileResultName;
+	int fileSize = 0;
+	WavHeader wav{};
+	if (mode) fileResultName = changeFileName(changeFileName(*fileName, "_raw", false), "txt", true);
+	else fileResultName = "wavtxt.txt";
+	UINT8* arrayWAVRAWAmplitudes = (UINT8 *)fileReadWAVRAW(fileName, &fileSize, &wav);
+	if (arrayWAVRAWAmplitudes == nullptr) {
+		cout << "Не удалось прочитать амплитуды\n";
+		return -1;
+	}
+
+	ofstream fileResult(fileResultName);
+	if (fileResult.is_open()) {
+		for (int i = 0; i < wav.subchunk2Size; ++i) {
+			//for (int i = 0; i < fileSize - 44; ++i) {
+			fileResult << static_cast<int>(arrayWAVRAWAmplitudes[i]) << "\n";
+		}
 		cout << "Данные записаны в файл " << fileResultName << "\n";
+		fileResult.close();
 	}
 	else {
 		cout << "Не удалось создать файл\n";
+		delete[] arrayWAVRAWAmplitudes;
+		return -1;
 	}
+	delete[] arrayWAVRAWAmplitudes;
 	return 0;
 }
+
 
 /* Функция, отвечающая за сравнение двух wav файлов.
 На вход поступает две строки, которые являются названиями файлов. После их получения происходит
@@ -193,7 +230,6 @@ streampos fileGetSize(ifstream& file) {
 }
 
 uint8_t* fileReadWAVRAW(string *fileName, int *fileSize, WavHeader *wav) {
-	//WavHeader wavReader = *wav;
 	ifstream fileWAVRAW(*fileName, ios::in | ios::binary);
 	*fileSize = fileGetSize(fileWAVRAW);
 	if (fileWAVRAW.is_open()) {
@@ -225,104 +261,147 @@ uint8_t* fileReadRAW(string *fileName, int *fileSize) {
 
 /*Функция синтеза из S и K файла
 Требуется dll DFEN или FENIKS*/
-int sintezWavFromUNIPRIM(string *fileStructuresName, string *fileHeadingName, bool debugInfo) {
-	string fileDebug = "degug_sintez_" + *fileStructuresName + ".txt";
-	LPCWSTR DLLName = L"FenVod.dll";																	// Имя DLL
-	LPCSTR DLLProcedureName = "F@enVod";																// Имя процедуры в DLL
-	string fileOutputName = "sintezPrimitiv.wav";														// Имя файла, в который будет записан результат
-	int fileStructuresSize = 0, fileSintezSize = 2000, fileHeadingSize = 0;								// Переменные с длинами тех или иных файлов
+int synthesizeWavFromUNIPRIM(string& fileStructuresName, const string& fileHeadingName, bool debugInfo) {
+	string fileDebug = changeFileName(fileStructuresName, "_debug_synthesize", false);
+	string fileOutputName = debugInfo ? "synthesizedPrimitive.wav" : changeFileName(fileStructuresName, "wav", true);
 
-	cout << "Считывание файла с ПРИМИТИВами из '" << *fileStructuresName << "' \n";						// -- Считыванием файла со структурами --
-	uint8_t* fileStructures = fileReadRAW(fileStructuresName, &fileStructuresSize);						// Процесс считывания
-	if (fileStructures == NULL) return -1;
-	for (long i = 0; i < fileStructuresSize; i = i + 4) {												// Цикл для высчитывания результирующего массива
-		UINT8 temporaryNumber = 1 + (uint8_t)fileStructures[i + 2] + (uint8_t)fileStructures[i + 3];	// Считываем первую амплитуду + по прямой + по косой
-		fileSintezSize = fileSintezSize + temporaryNumber;												// Итоговая переменная, в которую записывается суммированный результат
+	LPCWSTR dllName = L"FENick.dll"; //L"FenVod.dll"; 												// Имя DLL
+	LPCSTR dllProcedureName = "F@enick";//"F@enVod"; 												// Имя процедуры в DLL
+
+	int fileStructuresSize = 0, fileSynthesizeSize = 0, fileHeadingSize = 0, dataLength = 0;
+
+	cout << "Считывание файла с примитивами из '" << fileStructuresName << "'\n";
+	unique_ptr<Byte[]> fileStructures(fileReadRAW(&fileStructuresName, &fileStructuresSize));		// Считываем файл со структурами
+	if (!fileStructures) {
+		cerr << "Ошибка при чтении файла структур\n";
+		return -1;
 	}
 
-	cout << "Считывание заголовка из " << *fileHeadingName << "\n";										// -- Считыванием файла с заголовком --
-	uint8_t*  fileHeading = fileReadRAW(fileHeadingName, &fileHeadingSize);								// Процесс считывания
-	if (fileHeading == NULL) return -1;
+	int onlyStructuresSize = fileStructuresSize / 4;												// Вычисляем размер результирующего массива
+	for (int i = 0; i < fileStructuresSize; i += 4) {
+		Byte temporaryNumber = 1 + fileStructures[i + 2] + fileStructures[i + 3]; 					// Амплитуда + по прямой + по косой
+		fileSynthesizeSize += temporaryNumber;
+	}
 
-	//typedef int(__cdecl * Point) (uint8_t* amplitudeSize, uint8_t *fileWithStructures, UINT32 *fileWithStructuresSize, uint8_t* arrayForResult, UINT32 *arrayFroResultSize);	// Прототип процедуры
-	//typedef int(__cdecl * Point) (uint8_t *amplitudeSize, uint8_t *fileWithStructures, uint32_t fileWithStructuresSize, uint8_t* arrayForResult, uint32_t arrayFroResultSize, int *wm);	// Прототип процедуры
-	typedef int(__cdecl * Point) (uint8_t *amplitudeSize, uint8_t *fileWithStructures, int *fileWithStructuresSize, uint8_t* arrayForResult, int *arrayFroResultSize, int *wm);	// Прототип процедуры
-	HMODULE DLLHandle = LoadLibrary(DLLName);															// Ищем DLL в папке с программой
-	Point DLLProcedure = (Point)GetProcAddress(DLLHandle, DLLProcedureName);							// Загружаем адрес процедуры
-	uint8_t* fileSintez = new uint8_t[fileSintezSize]{ 0 };												// Создаем результирующйи массив с величиной, высчитанной в цикле
-	if (DLLProcedure != NULL) {																			// -- Процесс синтеза из структур --
-		uint8_t amplitudeSize = 1;	// Если 11 - получаем количество возможных бит для водяного знака	// Задаём величину амплитуды (1,2,4)
-		int wm = 1;
-		uint8_t fileSintez[100]{ 0 };
-		//int response = procAmplitudes(amplitudeSize, fileStructures, fileStructuresSize, fileSintez, fileSintezSize);
-		//uint16_t response = DLLProcedure(&amplitudeSize, &fileStructures[0], (uint32_t) fileStructuresSize, &fileSintez[0], (uint32_t) fileSintezSize, &wm);
-		uint16_t response = DLLProcedure(&amplitudeSize, &fileStructures[0], &fileStructuresSize, &fileSintez[0], &fileSintezSize, &wm);
-		for (int i = 0; i < fileSintezSize; i++) {
-			printf("%o\n", fileSintez[i]);
+	cout << "Считывание заголовка из '" << fileHeadingName << "'\n";								// Считываем файл с заголовком
+	WavHeader header;
+	{
+		ifstream inputFile(fileHeadingName, ios::binary);
+		if (!inputFile) {
+			cerr << "Ошибка при открытии файла заголовка\n";
+			return -1;
 		}
-		if (response < 0) {																				// Если с кодом ошибки
-			cout << "Ошибка " << response << "\n";														// Информируем
-		}
-		else {
-			fileSintezSize = response;																	// Величина присваивается  длине результирующего массива
+		inputFile.read(reinterpret_cast<char*>(&header), sizeof(WavHeader));
+		if (!inputFile) {
+			cerr << "Ошибка при чтении заголовка файла\n";
+			return -1;
 		}
 	}
-	else {																							// Если DLL не найдена
-		cout << "Нет хандла библиотеки " << DLLName << "\n";											// Оповещаем
-		return  1;																						// Выходим
-	}
-	FreeLibrary(DLLHandle);																				// Высвобождаем библиотеку
 
-	if (debugInfo) {
+	HMODULE dllHandle = LoadLibrary(dllName);														// Загрузка DLL и получение адреса функции
+	if (!dllHandle) {
+		cerr << "Не удалось загрузить библиотеку " << dllName << "\n";
+		return 1;
+	}
+
+	DLLFunction dllFunction = reinterpret_cast<DLLFunction>(GetProcAddress(dllHandle, dllProcedureName));
+	if (!dllFunction) {
+		cerr << "Не удалось получить адрес функции " << dllProcedureName << "\n";
+		FreeLibrary(dllHandle);
+		return 1;
+	}
+
+	unique_ptr<Byte[]> fileSynthesize(new Byte[fileSynthesizeSize]{});								// Создаем результирующий массив
+	int32_t amplitudeSize = 1; // Задаем величину амплитуды (1, 2, 4)
+	int8_t response = dllFunction(amplitudeSize, fileStructures.get(), &onlyStructuresSize, fileSynthesize.get(), &fileSynthesizeSize);	// Вызов функции из DLL
+	if (response < 0) {
+		cerr << "Ошибка при вызове функции из DLL, код ошибки: " << static_cast<int>(response) << "\n";
+		//FreeLibrary(dllHandle);
+		//return 1;
+	}
+	else {
+		fileSynthesizeSize = response;
+	}
+	FreeLibrary(dllHandle);
+
+	for (int i = 0; i < fileSynthesizeSize; ++i) {
+		if (fileSynthesize[i] == 0) {
+			dataLength = i;
+			break;
+		}
+	}
+	if (dataLength == 0) dataLength = fileSynthesizeSize;
+
+
+	if (debugInfo) {																				// Если включена отладочная информация
 		map<int, int> valuesAmplitudes, valuesStraights, valuesObliques;
-		for (int i = 0; i < fileStructuresSize; i = i + 4) {
+		for (int i = 0; i < fileStructuresSize; i += 4) {
 			valuesAmplitudes[fileStructures[i]]++;
 			valuesStraights[fileStructures[i + 2]]++;
 			valuesObliques[fileStructures[i + 3]]++;
 		}
 
-		ofstream file(fileDebug);
-		locale mylocale("");
-		file.imbue(mylocale);
-		auto countQuantity = [&](map<int, int> ma) {
+		ofstream debugFile(fileDebug);
+		if (!debugFile) {
+			cerr << "Ошибка при создании файла отладки\n";
+			return 1;
+		}
+
+		auto countQuantity = [](const map<int, int>& m) {
 			int sum = 0;
-			for (const auto& pair : ma)
-				sum += pair.second; // Добавление значения из текущего элемента
+			for (const auto& pair : m) sum += pair.second;
 			return sum;
 		};
 
-		auto countQuality = [&](map<int, int> ma) {
+		auto countQuality = [](const map<int, int>& m) {
 			int sum = 0;
-			for (const auto& pair : ma)
-				if (pair.first != 0)
-					sum += pair.first * pair.second; // Добавление значения из текущего элемента
+			for (const auto& pair : m)
+				if (pair.first != 0) sum += pair.first * pair.second;
 			return sum;
 		};
 
-		auto writeMap = [&](map<int, int> map) {
-			for (const auto& pair : map)
-				file << pair.first << ": " << pair.second << std::endl;
+		auto writeMap = [&](const map<int, int>& m) {
+			for (const auto& pair : m) debugFile << pair.first << ": " << pair.second << '\n';
 		};
 
-		file << "Информация по файлу " << *fileStructuresName << "\nКоличество характерных точек " << fileStructuresSize / 4 << "\nЗначения и их количество\n";
+		debugFile << "Информация по файлу " << fileStructuresName
+			<< "\nКоличество характерных точек: " << onlyStructuresSize
+			<< "\nЗначения и их количество:\n";
 		writeMap(valuesAmplitudes);
-		file << "\nИнформация по отсчётам по прямой\nвсего " << valuesStraights.size() << ", \nсумма в виде количества " << countQuantity(valuesStraights) << ", \nсумма в виде количества, умноженного на значение " << countQuality(valuesStraights) << "\n";
+
+		debugFile << "\nИнформация по отсчётам по прямой\nВсего: " << valuesStraights.size()
+			<< "\nСумма количества: " << countQuantity(valuesStraights)
+			<< "\nСумма произведений значения на количество: " << countQuality(valuesStraights) << '\n';
 		writeMap(valuesStraights);
-		file << "\nИнформация по отсчётам по косой\nвсего " << valuesObliques.size() << ", \nсумма в виде количества " << countQuantity(valuesObliques) << ", \nсумма в виде количества, умноженного на значение " << countQuality(valuesObliques) << "\n";
+
+		debugFile << "\nИнформация по отсчётам по косой\nВсего: " << valuesObliques.size()
+			<< "\nСумма количества: " << countQuantity(valuesObliques)
+			<< "\nСумма произведений значения на количество: " << countQuality(valuesObliques) << '\n';
 		writeMap(valuesObliques);
-		file.close();
 	}
 
-	ofstream fileOutput(fileOutputName, std::ios::out | std::ios::binary);
-	if (fileOutput.is_open()) {
-		fileOutput.write(reinterpret_cast<const char*>(fileHeading), fileHeadingSize);
-		fileOutput.write(reinterpret_cast<const char*>(fileSintez), fileSintezSize);
-		fileOutput.close();
-	}
-	else {
-		cout << "Ошибка при записи файла" << fileOutputName << "\n";
+	ofstream outputFile(fileOutputName, ios::binary);												// Запись результата в файл
+	if (!outputFile) {
+		cerr << "Ошибка при открытии файла для записи: " << fileOutputName << "\n";
 		return 1;
 	}
+
+	header.subchunk2Size = dataLength;														// Обновляем размер данных в заголовке
+	header.chunkSize = 44 + header.subchunk2Size;
+	header.subchunk2Id[0] = 'd';
+	header.subchunk2Id[1] = 'a';
+	header.subchunk2Id[2] = 't';
+	header.subchunk2Id[3] = 'a';
+
+	outputFile.write(reinterpret_cast<const char*>(&header), sizeof(WavHeader));
+	outputFile.write(reinterpret_cast<const char*>(fileSynthesize.get()), dataLength);
+	if (!outputFile) {
+		cerr << "Ошибка при записи в файл: " << fileOutputName << "\n";
+		return 1;
+	}
+
+	cout << "Файл '" << fileOutputName << "' успешно записан\n";
+	return 0;
 }
 
 /*	Запустить питон и передать как параметр два файла
@@ -453,33 +532,38 @@ int sintezFragments(string *fileName) {
 	return 0;
 }
 
-/*
-Функция для получения заголовка файла
-На вход поступает наименование wav файла, который должен быть открыт и из которого будет извелён заголовок.
-*/
-int getHeadingFrowWavFile(string *fileName) {
-	FILE* fileWithHeader = fopen(fileName->c_str(), "rb");				// Считываем файл
-	WavHeader header;													// Создаём структуру. куда считываем
-	if (fileWithHeader != NULL) {
-		fread(&header, sizeof(WavHeader), 1, fileWithHeader);			// Чтение заголовка файла WAV
-		fclose(fileWithHeader);											// Закрываем файл
-		cout << "Файл успешно прочитан\n";
-	}
-	else {
-		cout << "Ошибка открытия файла\n";
-		return 1;
+/* Функция для получения заголовка файла
+На вход поступает наименование wav файла, который должен быть открыт и из которого будет извелён заголовок. */
+bool getWavHeaderFromFile(const string& fileName) {
+	ifstream inputFile(fileName, ios::binary);										// Открываем WAV-файл для чтения в бинарном режиме
+	if (!inputFile) {
+		cerr << "Ошибка открытия файла: " << fileName << "\n";
+		return false;
 	}
 
-	FILE* headerFile = fopen(fileName->append(".h_uni").c_str(), "wb");	// Создаём файл
-	if (headerFile != NULL) {											// Если удалось создать
-		fwrite(&header, sizeof(int8_t), sizeof(header), headerFile);	// Записываем массив с размером Int_8t и длиной в файл
-		fclose(headerFile);												// Закрываем файл
-		cout << "файл " + *fileName + " успешно записан\n";
+	WavHeader header;																// Читаем заголовок WAV-файла
+	inputFile.read(reinterpret_cast<char*>(&header), sizeof(WavHeader));
+	if (!inputFile) {
+		cerr << "Ошибка чтения заголовка файла\n";
+		return false;
 	}
-	else {
-		cout << "Не удалось открыть файл для записи.\n";
-		return 1;
+	inputFile.close();
+	cout << "Файл успешно прочитан\n";
+
+	ofstream outputFile(changeFileName(fileName, "h_wav", true), ios::binary);
+	if (!outputFile) {
+		cerr << "Не удалось открыть файл для записи\n";
+		return false;
 	}
+
+	outputFile.write(reinterpret_cast<const char*>(&header), sizeof(WavHeader));	// Записываем заголовок в новый файл
+	if (!outputFile) {
+		cerr << "Ошибка при записи заголовка в файл\n";
+		return false;
+	}
+	outputFile.close();
+	cout << "Файл успешно записан\n";
+	return true;
 }
 
 int createFramesFromWAV(string *fileName) {
@@ -548,7 +632,8 @@ int createFramesFromWAV(string *fileName) {
 	return 0;
 }
 
-int createSegments(string *filename, int sampleRate, int *delta, bool *debugInfo) {
+// Создание из совокупного фрагмента (начало с начала файла) 
+int createSegmentsA(string *filename, int sampleRate, int *delta, bool *debugInfo, bool *mode) {
 	string fileOutputName = *filename, fileDebug = "debug_segments_" + *filename + "_.txt";																	// Имя для сегментов
 	fileOutputName.replace(filename->length() - 6, 6, "s1.comfra");										// Новое имя для первого сегмента
 	int fileComFragSize = 0, fileOutputNumber = 1, countSumComFrag = 0, countBetweenAddresses = 0, addressWithConditionDelta = 0;		// Размер файла, сумма отсчётов, счётчик записанных сегментов, счётчик амплитуд между адресами для сверки с дикретизацией
@@ -633,7 +718,7 @@ int createSegments(string *filename, int sampleRate, int *delta, bool *debugInfo
 
 	for (int i = 0; i < segmentsAddressesStartAndEnd.size(); i = i + 2) {
 		cout << "Запись файла фрагментов " << fileOutputName << "\n";
-		ofstream fileOutput(fileOutputName, std::ios::out | std::ios::binary);
+		ofstream fileOutput(fileOutputName, ios::out | ios::binary);
 		if (fileOutput.is_open()) {
 			int end = segmentsAddressesStartAndEnd[i + 1] - segmentsAddressesStartAndEnd[i];
 			fileOutput.write(reinterpret_cast<const char*>(&fileComFrag[segmentsAddressesStartAndEnd[i]]), end);
@@ -649,11 +734,776 @@ int createSegments(string *filename, int sampleRate, int *delta, bool *debugInfo
 	return 1;
 }
 
+// Создание из совокупного фрагмента (начало с центра) 
+int createSegmentsB(string *filename, int sampleRate, int *delta, bool *debugInfo, bool *mode) {
+	string fileOutputName = *filename, fileDebug = "debug_segments_" + *filename + "_.txt";																	// Имя для сегментов
+	fileOutputName.replace(filename->length() - 6, 6, "s1.comfra");										// Новое имя для первого сегмента
+	int fileComFragSize = 0, fileOutputNumber = 1, countSumComFrag = 0, countBetweenAddresses = 0, addressWithConditionDelta = 0;		// Размер файла, сумма отсчётов, счётчик записанных сегментов, счётчик амплитуд между адресами для сверки с дикретизацией
+	uint16_t addressComFrag = 0;																		// Адрес первого указателя
+	vector <uint16_t> addressesComFrag;																	// Создание массива с будующими адресами
+	map <uint16_t, uint16_t> mapComFrag;
+
+	cout << "Считывание файла совокупной фрагментации из '" << *filename << "' \n";
+	uint8_t* fileComFrag = fileReadRAW(filename, &fileComFragSize);										// -- Считыванием файла --
+	while (addressComFrag < fileComFragSize) {															// В цикле, пока не прочитаем весь файл (если файл кончился - указатель будет за пределы файла)
+		addressesComFrag.push_back(addressComFrag);														// Пишем первый адрес (по умолчанию 0)
+		uint16_t addressComFragPrevious = addressComFrag;												// Записываем предыдущий адрес (для проверки)
+		countSumComFrag = countSumComFrag + (fileComFrag[addressComFrag + 10] ^ (fileComFrag[addressComFrag + 11] << 8)); // счётчик суммы амплитуд по ВСЕМУ файлу // Должно быть 21504, но навскидку верно (21442)
+		addressComFrag = fileComFrag[addressComFrag + 28] ^ (fileComFrag[addressComFrag + 29] << 8);	// Вырабатываем адресследующего сегмента
+		mapComFrag[countSumComFrag] = addressComFrag;
+		if (addressComFragPrevious > addressComFrag) {													// Если указатель указывает назад, то оповещаем о проблеме
+			cout << "Ошибка адресации совокупного фрагмента\n";											// Оповещаем
+			return -1;
+		}
+	}
+
+	queue <bool> condition;																				// Условие, при котором мы говорим, что сенгмент не сегмент
+	vector <uint16_t> segmentsAddressesStartAndEnd;														// Вектор с началом и концом сегмента (кратный 2)
+	bool flag = false;																					// Флаг, для условия проверки
+
+
+	uint16_t fixedAddress = 0, fixedSum = 0, countBack = 0;
+	for (auto it = mapComFrag.begin(); it != mapComFrag.end(); ++it) {
+		countBack++;
+		if (it->first >= sampleRate) {
+			fixedAddress = it->second;
+			fixedSum = it->first;
+			break;
+		}
+	}
+	auto it = mapComFrag.find(fixedSum);
+	uint16_t countBackOnly = countBack;
+	for (auto rit = map<uint16_t, uint16_t>::reverse_iterator(it); rit != mapComFrag.rend(); ++rit) {
+		addressComFrag = addressesComFrag[countBackOnly];													// Присваиваем адрес
+		countBackOnly--;
+		uint16_t product = fileComFrag[addressComFrag + 6] - fileComFrag[addressComFrag + 2];			// Находим разницу между экстремумами
+		countBetweenAddresses = countBetweenAddresses + (fileComFrag[addressComFrag + 10] ^ (fileComFrag[addressComFrag + 11] << 8));	// счётчик суммы амплитуд между двумя адресами
+		countSumComFrag = countSumComFrag + (fileComFrag[addressComFrag + 10] ^ (fileComFrag[addressComFrag + 11] << 8));
+
+		if (debugInfo) if (product > *delta) addressWithConditionDelta++;								// Если врублен дебаг - записываем, сколько всего фрагментов удовлетворяет условию
+
+		if (product > *delta) condition.push(true);														// Если больше дельты, то ИС, говорим тру
+		else condition.push(false);																		// Если меньше дельты, то МИС, говорим фолс
+		if (condition.size() == 3) {																	// Если мы достигли 3 условий, то начинаем смотреть на совокупность
+			byte conditionDelta = 0;
+			for (int i = 0; i < condition.size(); i++) {												// Цикл просмотра на то, кто тру и как много
+				if (condition.front() == true) conditionDelta++;										// Счётчик
+				condition.push(condition.front());														// вставляем вперёд наше следующее значение
+				condition.pop();																		// удаляем его (перебираем стопку тарелок)
+			}
+			condition.pop();																			// удаляем первое значение (результат в переменной)
+			if (conditionDelta == 0) {																	// Если больше 2 (то есть все 3 тру)
+				if (flag == false) {																	// И флаг фолс
+					countBetweenAddresses = 0;															// Начинаем отсчёт разницы адресов
+				}
+				if (countBetweenAddresses == 0) {														// Если разница 0
+					segmentsAddressesStartAndEnd.push_back(addressComFrag);								// Записываем адрес начала
+					flag = true;																		// Флаг переводим в тру
+					break;
+				}
+			}
+			if (rit->second == 0) {																		// Если условие фолс и разница между больше дискретизации
+				segmentsAddressesStartAndEnd.push_back(addressComFrag);									// Записываем адрес
+				flag = false;																			// Флаг переводм в фолс
+				break;
+			}
+		}
+	}
+
+	for (; it != mapComFrag.end(); ++it) {
+		addressComFrag = addressesComFrag[countBack];													// Присваиваем адрес
+		countBack++;
+		uint16_t product = fileComFrag[addressComFrag + 6] - fileComFrag[addressComFrag + 2];			// Находим разницу между экстремумами
+		countBetweenAddresses = countBetweenAddresses + (fileComFrag[addressComFrag + 10] ^ (fileComFrag[addressComFrag + 11] << 8));	// счётчик суммы амплитуд между двумя адресами
+		countSumComFrag = countSumComFrag + (fileComFrag[addressComFrag + 10] ^ (fileComFrag[addressComFrag + 11] << 8));
+
+		if (debugInfo) if (product > *delta) addressWithConditionDelta++;								// Если врублен дебаг - записываем, сколько всего фрагментов удовлетворяет условию
+
+		if (product > *delta) condition.push(true);														// Если больше дельты, то ИС, говорим тру
+		else condition.push(false);																		// Если меньше дельты, то МИС, говорим фолс
+		if (condition.size() == 3) {																	// Если мы достигли 3 условий, то начинаем смотреть на совокупность
+			byte conditionDelta = 0;
+			for (int i = 0; i < condition.size(); i++) {												// Цикл просмотра на то, кто тру и как много
+				if (condition.front() == true) conditionDelta++;										// Счётчик
+				condition.push(condition.front());														// вставляем вперёд наше следующее значение
+				condition.pop();																		// удаляем его (перебираем стопку тарелок)
+			}
+			condition.pop();																			// удаляем первое значение (результат в переменной)
+			if (conditionDelta <= 1) {																	// Если условие фолс и разница между больше дискретизации
+				segmentsAddressesStartAndEnd.push_back(addressComFrag);									// Записываем адрес
+				flag = false;																			// Флаг переводм в фолс
+				countBetweenAddresses = 0;
+				break;
+			}
+			if (mapComFrag.size() == countBack) {
+				segmentsAddressesStartAndEnd.push_back(addressComFrag);
+				break;
+			}
+		}
+	}
+	if (*debugInfo) {
+		ofstream file(fileDebug);
+		locale mylocale("");
+		file.imbue(mylocale);
+
+		file << "Информация по файлу " << *filename << "\nРазмер файла " << fileComFragSize
+			<< "\nКоличество амплитуд по фрагментам " << countSumComFrag << "\nКоличество адресов, удовлетворяющих дельте " << addressWithConditionDelta
+			<< "\nВсего адресов " << addressesComFrag.size();
+	}
+
+	for (int i = 0; i < segmentsAddressesStartAndEnd.size(); i = i + 2) {
+		cout << "Запись файла фрагментов " << fileOutputName << "\n";
+		ofstream fileOutput(fileOutputName, ios::out | ios::binary);
+		if (fileOutput.is_open()) {
+			int end = segmentsAddressesStartAndEnd[i + 1] - segmentsAddressesStartAndEnd[i];
+			fileOutput.write(reinterpret_cast<const char*>(&fileComFrag[segmentsAddressesStartAndEnd[i]]), end);
+			fileOutput.close();
+			fileOutputNumber++;
+			fileOutputName[fileOutputName.length() - 8] = *to_string(fileOutputNumber).c_str();
+		}
+		else {
+			cout << "Ошибка при записи файла" << fileOutputName << "\n";
+			return 1;
+		}
+	}
+	return 1;
+}
+
+// Создание из файла калибров (начало с центра) 
+int createSegmentsC(string *filename, bool *debugInfo, bool *mode) {
+	string fileOutputName = *filename, fileDebug = "debug_segments_" + *filename + "_.txt";																	// Имя для сегментов
+	fileOutputName.replace(filename->length() - 6, 6, "s1.drazmK");										// Новое имя для первого сегмента
+	int fileComFragSize = 0, fileOutputNumber = 1;
+	vector <uint16_t> addressesComFrag;																	// Создание массива с будующими адресами
+	map <uint16_t, uint16_t> mapComFrag;
+
+	cout << "Считывание файла калибров из '" << *filename << "' \n";
+	uint8_t* fileDrazmK = fileReadRAW(filename, &fileComFragSize);
+	if (!fileDrazmK) return -1;
+
+	uint16_t sizeToIteration = (fileComFragSize - 4) / 2;
+	uint16_t sizeToIterationTemp = sizeToIteration;
+	vector <uint16_t> segmentsAddressesStartAndEnd;
+	queue <bool> condition;
+	bool flag = true;
+	for (int i = sizeToIteration - 6; i > 0; i = i - 16) {
+		uint8_t kalibr = fileDrazmK[i + 3];
+		if (kalibr > 18) condition.push(true);														// Если больше дельты, то ИС, говорим тру
+		else condition.push(false);																		// Если меньше дельты, то МИС, говорим фолс
+		if (condition.size() == 3) {																	// Если мы достигли 3 условий, то начинаем смотреть на совокупность
+			byte conditionDelta = 0;
+			for (int i = 0; i < condition.size(); i++) {												// Цикл просмотра на то, кто тру и как много
+				if (condition.front() == true) conditionDelta++;										// Счётчик
+				condition.push(condition.front());														// вставляем вперёд наше следующее значение
+				condition.pop();																		// удаляем его (перебираем стопку тарелок)
+			}
+			condition.pop();																			// удаляем первое значение (результат в переменной)
+			if (conditionDelta <= 1) {																	// Если условие фолс и разница между больше дискретизации
+				segmentsAddressesStartAndEnd.push_back(sizeToIterationTemp);									// Записываем адрес
+				flag = false;																			// Флаг переводм в фолс
+				break;
+			}
+			if (i < 0) {
+				segmentsAddressesStartAndEnd.push_back(sizeToIterationTemp);
+			}
+		}
+		sizeToIterationTemp = sizeToIterationTemp - 16;
+	}
+	sizeToIterationTemp = sizeToIteration;
+	condition.pop();
+	condition.pop();
+	for (int i = sizeToIteration; i < fileComFragSize - 4; i = i + 16) {
+		uint8_t kalibr = fileDrazmK[i + 3];
+		if (kalibr > 18) condition.push(true);														// Если больше дельты, то ИС, говорим тру
+		else condition.push(false);																		// Если меньше дельты, то МИС, говорим фолс
+		if (condition.size() == 3) {																	// Если мы достигли 3 условий, то начинаем смотреть на совокупность
+			byte conditionDelta = 0;
+			for (int i = 0; i < condition.size(); i++) {												// Цикл просмотра на то, кто тру и как много
+				if (condition.front() == true) conditionDelta++;										// Счётчик
+				condition.push(condition.front());														// вставляем вперёд наше следующее значение
+				condition.pop();																		// удаляем его (перебираем стопку тарелок)
+			}
+			condition.pop();																			// удаляем первое значение (результат в переменной)
+			if (conditionDelta <= 1) {																	// Если условие фолс и разница между больше дискретизации
+				segmentsAddressesStartAndEnd.push_back(sizeToIterationTemp);									// Записываем адрес
+				flag = false;																			// Флаг переводм в фолс
+				break;
+			}
+		}
+		sizeToIterationTemp = sizeToIterationTemp + 16;
+	}
+	for (int i = 0; i < segmentsAddressesStartAndEnd.size(); i = i + 2) {
+		cout << "Запись файла фрагментов " << fileOutputName << "\n";
+		ofstream fileOutput(fileOutputName, ios::out | ios::binary);
+		if (fileOutput.is_open()) {
+			int end = segmentsAddressesStartAndEnd[i + 1] - segmentsAddressesStartAndEnd[i];
+			fileOutput.write(reinterpret_cast<const char*>(&fileDrazmK[segmentsAddressesStartAndEnd[i]]), end);
+			fileOutput.close();
+			fileOutputNumber++;
+			fileOutputName[fileOutputName.length() - 8] = *to_string(fileOutputNumber).c_str();
+		}
+		else {
+			cout << "Ошибка при записи файла" << fileOutputName << "\n";
+			return 1;
+		}
+	}
+	return 1;
+}
+
+// Смена всех прямых на косые (учитываем, что если есть ступенька, то для неё 1 по прямой)
+int changeAllToAverageOblique(string *fileStructuresName) {
+	string fileOutputName = changeFileName(changeFileName(*fileStructuresName, "_AO", false), "uni", true);						// Имя файла, в который будет записан результат
+	int fileStructuresSize = 0, fileHeadingSize = 0;											// Переменные с длинами тех или иных файлов
+
+	cout << "Считывание файла с ПРИМИТИВами из '" << *fileStructuresName << "' \n";				// -- Считыванием файла со структурами --
+	uint8_t* fileStructures = fileReadRAW(fileStructuresName, &fileStructuresSize);				// Процесс считывания
+	if (!fileStructures) return -1;
+	UINT32 oblique = 0, straigth = 0;
+	for (long i = 0; i < fileStructuresSize; i = i + 4) {										// Цикл для высчитывания результирующего массива
+		straigth = straigth + (uint8_t)fileStructures[i + 2];
+		oblique = oblique + (uint8_t)fileStructures[i + 3];
+	}
+	UINT32 allTempPoints = straigth + oblique;
+	UINT32 averageOblique = allTempPoints / (fileStructuresSize / 4);
+	UINT32 remainderOfTheDivision = allTempPoints - fileStructuresSize / 4 * averageOblique;
+	for (long i = 0; i < fileStructuresSize; i = i + 4) {										// Цикл для высчитывания результирующего массива
+		if (fileStructures[i] == fileStructures[i + 4] && i != fileStructuresSize) {
+			fileStructures[i + 2] = (UINT8)averageOblique;										// Если будет по прямой - не нарушаем структуры, делаем полку
+			fileStructures[i + 3] = 0;
+		}
+		else {
+			UINT8 tempNumber = averageOblique;
+			if (remainderOfTheDivision != 0) {
+				tempNumber += 1;																// На случай нецелочисленного деления (сохраняем этот нюанс)
+				remainderOfTheDivision--;
+			}
+			fileStructures[i + 2] = 0;
+			fileStructures[i + 3] = tempNumber;													// Записываем по косой усреднённый вариант
+		}
+	}
+
+	UINT8 removeLast = fileStructures[fileStructuresSize - 1];
+	fileStructures[fileStructuresSize - 1] = 0;
+	fileStructures[fileStructuresSize - 5] = fileStructures[fileStructuresSize - 5] + removeLast;
+
+	ofstream fileOutput(fileOutputName, ios::out | ios::binary);
+	if (fileOutput.is_open()) {
+		fileOutput.write(reinterpret_cast<const char*>(fileStructures), fileStructuresSize);
+		fileOutput.close();
+	}
+	else {
+		cout << "Ошибка при записи файла" << fileOutputName << "\n";
+		return 1;
+	}
+}
+
+// Сохраняет топологию, корректируя значения в зависимости от тенденции
+void topologyCompressor(vector<uint8_t>& data, bool isIncreasingTrend, int currentIndex, int segmentLength, int thresholdValue, int8_t adjustmentValue, vector <Byte> &deltas) {
+	if (currentIndex == 0 || currentIndex == 1) {
+		deltas.push_back(0);
+		return;
+	}
+
+	map<int, int> frequencyMap;
+	for (int i = 0; i < segmentLength; i++) {
+		int dataValue = data[currentIndex - segmentLength + i];
+		frequencyMap[dataValue]++;
+	}
+
+	vector<int> keysToAdjust;
+
+	// Шаг 1: Идентифицируем ключи больше или меньше thresholdValue
+	for (const auto& pair : frequencyMap) {
+		if (isIncreasingTrend) {
+			if (pair.first > thresholdValue) keysToAdjust.push_back(pair.first);
+		}
+		else {
+			if (pair.first < thresholdValue) keysToAdjust.push_back(pair.first);
+		}
+	}
+
+	// Шаг 2: Сортируем ключи
+	if (isIncreasingTrend) {
+		sort(keysToAdjust.begin(), keysToAdjust.end());
+	}
+	else {
+		sort(keysToAdjust.begin(), keysToAdjust.end(), greater<int>());
+	}
+
+	// Шаг 3: Создаём отображение старых ключей в новые
+	map<int, int> keyMapping;
+	int newKey = 0;
+	if (isIncreasingTrend) {
+		newKey = thresholdValue + 1;
+		if (segmentLength == 1) newKey = thresholdValue;
+	}
+	else {
+		newKey = thresholdValue - 1;
+		if (segmentLength == 1) newKey = thresholdValue;
+	}
+	for (int oldKey : keysToAdjust) {
+		keyMapping[oldKey] = newKey;
+		if (isIncreasingTrend) newKey++;
+		else newKey--;
+	}
+
+	map<int, int> adjustedFrequencyMap;
+	for (const auto& pair : frequencyMap) {
+		int key = pair.first;
+		int value = pair.second;
+		// Если ключ больше или меньше thresholdValue, заменяем его на новый
+		if (isIncreasingTrend) {
+			if (key > thresholdValue) key = keyMapping[key];
+		}
+		else {
+			if (key < thresholdValue) key = keyMapping[key];
+		}
+		adjustedFrequencyMap[key] = value;
+	}
+
+	// собираем дельты
+	for (const auto& pair : keyMapping) {
+		if (isIncreasingTrend) deltas.push_back(pair.first - pair.second);
+		else deltas.push_back(pair.second - pair.first);
+	}
+
+	// Шаг 5: Обновляем значения в векторе data
+	for (int i = 0; i < segmentLength; i++) {
+		int dataValue = data[currentIndex - segmentLength + i];
+		if (keyMapping.find(dataValue) != keyMapping.end()) {
+			if (isIncreasingTrend) {
+				data[currentIndex - segmentLength + i] = keyMapping[dataValue] + adjustmentValue;
+			}
+			else {
+				data[currentIndex - segmentLength + i] = keyMapping[dataValue] - adjustmentValue;
+			}
+		}
+	}
+}
+
+void processData(vector<uint8_t>& data, int8_t adjustmentValue) {
+	bool isIncreasingTrend = false; // true - растём, false - уменьшаемся
+	int thresholdValue = 128;
+	int segmentLength = 0;
+	vector <Byte> deltas;
+
+	for (int i = 0; i < data.size(); i++) {
+		if (data[i] > thresholdValue) {
+			if (isIncreasingTrend == false) {
+				topologyCompressor(data, isIncreasingTrend, i, segmentLength, thresholdValue, adjustmentValue, deltas);
+				segmentLength = 0;
+			}
+			isIncreasingTrend = true;
+			segmentLength++;
+		}
+		else if (data[i] < thresholdValue) {
+			if (isIncreasingTrend == true) {
+				topologyCompressor(data, isIncreasingTrend, i, segmentLength, thresholdValue, adjustmentValue, deltas);
+				segmentLength = 0;
+			}
+			isIncreasingTrend = false;
+			segmentLength++;
+		}
+		else if (data[i] == thresholdValue) {
+			if (i < data.size() - 1) {
+				if (data[i] != data[i + 1]) {
+					topologyCompressor(data, isIncreasingTrend, i, segmentLength, thresholdValue, adjustmentValue, deltas);
+					segmentLength = 0;
+				}
+			}
+			segmentLength++;
+		}
+	}
+	// Обработка последнего сегмента
+	topologyCompressor(data, isIncreasingTrend, data.size(), segmentLength, thresholdValue, adjustmentValue, deltas);
+
+	ofstream outputFile("deltas", ios::binary);
+	outputFile.write(reinterpret_cast<const char*>(deltas.data()), deltas.size() * sizeof(char));
+	outputFile.close();
+}
+
+int changeAllPointsWithSavedStructure(string* fileName, string compressionFactor) {
+	string outputFileName = changeFileName(changeFileName(*fileName, "_cps", false), "uni", true);		// Имя выходного файла
+	int fileSize = 0;
+	uint8_t* fileData = fileReadRAW(fileName, &fileSize);
+	if (!fileData) return -1;
+
+	vector<uint8_t> data;																				// Выбираем каждый 4-й байт из fileData
+	for (size_t i = 0; i < fileSize; i += 4) data.push_back(fileData[i]);
+
+	processData(data, static_cast<int8_t>(atoi(compressionFactor.c_str())));							// Обрабатываем данные
+
+	for (size_t i = 0, j = 0; i < fileSize && j < data.size(); i += 4, ++j) fileData[i] = data[j];		// Записываем измененные данные обратно в fileData
+
+	ofstream outputFile(outputFileName, ios::binary);													// Записываем измененные данные в выходной файл
+	if (!outputFile.is_open()) {
+		cerr << "Ошибка при открытии файла для записи: " << outputFileName << "\n";
+		delete[] fileData;
+		return 1;
+	}
+	outputFile.write(reinterpret_cast<const char*>(fileData), fileSize);
+	outputFile.close();
+
+	cout << "Обработка данных завершена успешно.\n";
+	delete[] fileData;
+	return 0;
+}
+
+#pragma pack(push, 1)
+struct Record {
+	uint16_t amplitude;  // 2 байта
+	uint8_t straight;    // 1 байт (по прямой)
+	uint8_t diagonal;    // 1 байт (по косой)
+};
+#pragma pack(pop)
+
+int changeAllStraightToOblique(string *inputFilename) {
+	string fileOutputName = changeFileName(changeFileName(*inputFilename, "_oblique", false), "uni", true);
+	int fileSize = 0;
+	uint8_t* rawData = fileReadRAW(inputFilename, &fileSize);
+	if (!rawData) return -1;
+
+	size_t numRecords = fileSize / sizeof(Record);
+
+	Record* records = reinterpret_cast<Record*>(rawData);
+	vector<Record> outputRecords;
+	for (size_t i = 0; i < numRecords; ++i) {
+		Record& currRecord = records[i];
+		bool removeRecord = false;
+
+		if (currRecord.straight > 0) {
+			if (currRecord.diagonal == 0) {
+				// Если есть предыдущая запись
+				if (i > 0) {
+					Record& prevRecord = outputRecords.back();
+					prevRecord.diagonal += currRecord.straight + 1;
+				}
+				else {
+					// Если нет предыдущей записи, добавляем к текущему
+					currRecord.diagonal = currRecord.straight + 1;
+				}
+				// Помечаем текущую запись для удаления
+				removeRecord = true;
+			}
+			else {
+				// Есть и straight, и diagonal
+				currRecord.diagonal += currRecord.straight;
+				currRecord.straight = 0;
+				// Не удаляем запись
+			}
+		}
+
+		if (!removeRecord) {
+			// Добавляем запись в выходной вектор
+			outputRecords.push_back(currRecord);
+		}
+		// Если запись помечена для удаления, просто не добавляем её в outputRecords
+	}
+
+
+	ofstream fileOutput(fileOutputName, ios::out | ios::binary);
+	if (fileOutput.is_open()) {
+		fileOutput.write(reinterpret_cast<const char*>(outputRecords.data()), outputRecords.size() * sizeof(Record));
+		fileOutput.close();
+	}
+	else {
+		cout << "Ошибка при записи файла " << fileOutputName << "\n";
+		delete[] rawData;
+		return 1;
+	}
+
+	delete[] rawData;
+	cout << "Обработка данных завершена успешно.\n";
+	return 0;
+}
+
+int checkStructureByStraightAndObliqe(string *inputFilename) {
+	int fileSize = 0;
+	uint8_t* rawData = fileReadRAW(inputFilename, &fileSize);
+
+	// Проверяем, что размер файла кратен размеру структуры Record
+	if (fileSize % sizeof(Record) != 0) {
+		cerr << "Размер файла не кратен размеру записи.\n";
+		delete[] rawData;
+		return 1;
+	}
+
+	size_t numRecords = fileSize / sizeof(Record);
+	Record* records = reinterpret_cast<Record*>(rawData);
+
+	// Итерируем по записям от индекса 0 до предпоследнего
+	for (size_t i = 0; i < numRecords - 1; ++i) {
+		Record& currRecord = records[i];
+		Record& nextRecord = records[i + 1];
+
+		// Проверяем, что байты straight и diagonal ненулевые в обеих записях
+		if (currRecord.amplitude == nextRecord.amplitude) {
+			if (currRecord.straight == 0 && currRecord.diagonal == 0) {
+				if (nextRecord.straight == 0 && nextRecord.diagonal == 0) {
+					cout << "Нули по текущей и следующей структуре в направлениях: " << i << "\n";
+				}
+				cout << "Нули по текущей структуре в направлениях: " << i << "\n";
+			}
+			if (currRecord.straight > 0 && nextRecord.straight > 0) {
+				cout << "Полка по двум структурам сразу" << i << "\n";
+			}
+		}
+		if (currRecord.diagonal > 0 && currRecord.straight > 0) {
+			cout << "И полка и тенденция: " << i << "\n";
+		}
+	}
+	delete[] rawData;
+	return 0;
+}
+
+// Структура для хранения экстремумов
+struct Extremum {
+	size_t index;
+	uint8_t value;
+	string type; // "max" или "min"
+};
+
+void writeExtremaToFile(const string& fileName, const vector<Record>& records, const vector<Extremum>& extrema, const string& typeFilter = "") {
+	ofstream file(fileName);
+	if (!file.is_open()) {
+		cerr << "Ошибка при открытии файла для записи: " << fileName << "\n";
+		return;
+	}
+
+	vector<uint8_t> finalData;															// Вектор для хранения конечных данных
+	for (size_t i = 0; i < extrema.size(); ++i) {
+		if (typeFilter.empty() || extrema[i].type == typeFilter) {
+			uint8_t tempStraightAndOblique = 0;
+			if (i != 0) {
+				size_t startIndex = extrema[i - 1].index + 1;							// Расчет суммарных значений по прямой и по косой между текущим и предыдущим экстремумами
+				size_t endIndex = extrema[i].index;
+
+				for (size_t j = startIndex; j < endIndex; ++j) tempStraightAndOblique += records[j].straight + records[j].diagonal;
+
+				// Добавляем данные в finalData
+				finalData.push_back(extrema[i].value); // Амплитуда
+				finalData.push_back(0); // Зарезервированное значение
+				finalData.push_back(records[extrema[i].index].straight);
+				finalData.push_back(records[extrema[i].index].diagonal + tempStraightAndOblique);
+
+				if (i >= 8 && finalData[finalData.size() - 8] == finalData[finalData.size() - 4]) {		// Проверка на равенство амплитуд
+					finalData[finalData.size() - 6] = finalData[finalData.size() - 5];
+					finalData[finalData.size() - 5] = 0;
+				}
+
+				if (i >= 12 && finalData[finalData.size() - 9] != 0 && finalData[finalData.size() - 10] != 0) {
+					if (finalData[finalData.size() - 12] != 0 && finalData[finalData.size() - 8] != 0) {
+						finalData[finalData.size() - 9] = finalData[finalData.size() - 9] + finalData[finalData.size() - 10];
+						finalData[finalData.size() - 10] = 0;
+					}
+					else {
+						finalData[finalData.size() - 10] = finalData[finalData.size() - 9] + finalData[finalData.size() - 10];
+						finalData[finalData.size() - 9] = 0;
+					}
+				}
+				if (i >= 12 && (finalData[finalData.size() - 4] == finalData[finalData.size() - 8]) && (finalData[finalData.size() - 4] == finalData[finalData.size() - 12])) {
+					finalData[finalData.size() - 10] = finalData[finalData.size() - 10] + finalData[finalData.size() - 6];
+					finalData[finalData.size() - 6] = 0;
+					finalData[finalData.size() - 5] = finalData[finalData.size() - 1];
+					finalData.pop_back();
+					finalData.pop_back();
+					finalData.pop_back();
+					finalData.pop_back();
+				}
+			}
+			else {																	// Для первого экстремума просто добавляем его данные
+				finalData.push_back(records[extrema[i].index].amplitude);
+				finalData.push_back(records[extrema[i].index].straight);
+				finalData.push_back(records[extrema[i].index].diagonal);
+				finalData.push_back(0);
+			}
+		}
+	}
+	if (finalData[finalData.size() - 1] != 0 || finalData[finalData.size() - 2] != 0) {
+		finalData.push_back(128);															// Добавляем завершающие данные
+		finalData.push_back(0);
+		finalData.push_back(0);
+		finalData.push_back(0);
+	}
+
+	ofstream outputFile(changeFileName(fileName, "uni", true), ios::binary);									// Записываем измененные данные в выходной файл
+	if (outputFile.is_open()) {
+		outputFile.write(reinterpret_cast<const char*>(finalData.data()), finalData.size());
+		outputFile.close();
+	}
+	else {
+		cerr << "Ошибка при записи файла\n";
+		return;
+	}
+	cout << "Обработка данных завершена успешно.\n";
+
+	for (const auto& ext : extrema) 													// Записываем информацию об экстремумах в текстовый файл
+		if (typeFilter.empty() || ext.type == typeFilter) file << "Индекс: " << ext.index << ", Значение: " << static_cast<int>(ext.value) << ", Тип: " << ext.type << "\n";
+	file.close();
+}
+
+// Функция для обработки экстремумов
+int processExtremums(string *inputFilename) {
+	int fileSize = 0;																	// Чтение данных из файла
+	uint8_t* rawData = fileReadRAW(inputFilename, &fileSize);
+	if (!rawData) return -1;
+
+	vector<Record> records;																// Преобразуем сырые данные в вектор записей
+	for (int i = 0; i + 3 < fileSize; i += 4) {
+		Record rec = { rawData[i], rawData[i + 2], rawData[i + 3] };
+		records.push_back(rec);
+	}
+	delete[] rawData;																	// Освобождаем память после использования
+
+	vector<Extremum> extrema;															// Поиск экстремумов, используя алгоритмы непосредственно в коде
+	int threshold = 128;
+	bool inMax = false, inMin = false;
+	uint8_t currentMax = 0, currentMin = 255;
+	size_t maxIndex = 0, minIndex = 0;
+
+	for (size_t i = 0; i < records.size(); ++i) {
+		uint8_t value = (UINT8)records[i].amplitude;
+
+		if (value > threshold) {														// Обработка максимума
+			if (!inMax) {
+				inMax = true;
+				currentMax = value;
+				maxIndex = i;
+			}
+			else if (value > currentMax) {
+				currentMax = value;
+				maxIndex = i;
+			}
+		}
+		else if (inMax) {
+			inMax = false;
+			extrema.push_back({ maxIndex, currentMax, "max" });
+		}
+		if (value < threshold) {														// Обработка минимума
+			if (!inMin) {
+				inMin = true;
+				currentMin = value;
+				minIndex = i;
+			}
+			else if (value < currentMin) {
+				currentMin = value;
+				minIndex = i;
+			}
+		}
+		else if (inMin) {
+			inMin = false;
+			extrema.push_back({ minIndex, currentMin, "min" });
+		}
+	}
+
+	// Проверка, если максимум или минимум на конце данных
+	if (inMax) extrema.push_back({ maxIndex, currentMax, "max" });
+	if (inMin) extrema.push_back({ minIndex, currentMin, "min" });
+
+
+	cout << "Найденные экстремумы:\n";													// Вывод результатов
+	for (const auto& ext : extrema) cout << "Индекс: " << ext.index << ", Значение: " << static_cast<int>(ext.value) << ", Тип: " << ext.type << "\n";
+
+
+	writeExtremaToFile(changeFileName(*inputFilename, "_minima", false), records, extrema, "min");							// Записываем минимумы в файл
+	writeExtremaToFile(changeFileName(*inputFilename, "_maxima", false), records, extrema, "max");							// Записываем максимумы в файл
+	writeExtremaToFile(changeFileName(*inputFilename, "_extrema", false), records, extrema);								// Записываем все экстремумы в файл
+	return 0;
+}
+
+int getAllDeltasBetweenZeroAndDot(string *inputFilename) {
+	int fileSize = 0;																	// Чтение данных из файла
+	UINT8 zero = 128;
+	uint8_t* rawData = fileReadRAW(inputFilename, &fileSize);
+	if (!rawData) return -1;
+
+	for (int i = 0; i < fileSize; i = i + 4) {
+		rawData[i] = zero - rawData[i];
+		/*if (rawData[i] > zero) rawData[i] = rawData[i] - zero;
+		else if (rawData[i] < zero) rawData[i] = (INT8) abs(zero - rawData[i]);
+		else if (rawData[i] == zero) rawData[i] = 0;*/
+	}
+
+	ofstream fileOutput(changeFileName(changeFileName(*inputFilename, "_deltas", false), ".uni", true), ios::out | ios::binary);
+	if (fileOutput.is_open()) {
+		fileOutput.write(reinterpret_cast<const char*>(rawData), fileSize);
+		fileOutput.close();
+	}
+	else {
+		cout << "Ошибка при записи файла " << "deltas_" + *inputFilename << "\n";
+		delete[] rawData;
+		return 1;
+	}
+
+	delete[] rawData;
+	cout << "Обработка данных завершена успешно.\n";
+	return 0;
+}
+
+int diagonalProcessing(string *fileName, string *deltaStr) {
+	string deltaIn;
+	bool type = false;
+	int fileStructuresSize = 0;
+
+	cout << "Укажите величину дельты: ";
+	getline(cin, deltaIn);
+	UINT8 delta = atoi(deltaIn.c_str());
+	string fileOutputName = changeFileName(*fileName, "_diagonal" + *deltaStr + deltaIn, false);
+	uint8_t* fileStructures = fileReadRAW(fileName, &fileStructuresSize);
+	if (!fileStructures) return -1;
+
+	if (*deltaStr == "+") {
+		for (long i = 0; i < fileStructuresSize; i = i + 4) {										// Цикл для высчитывания результирующего массива
+			if (type) {
+				if (fileStructures[i + 2] > 0) fileStructures[i + 2] = fileStructures[i + 2] + delta;
+				if (fileStructures[i + 3] > 0) fileStructures[i + 3] = fileStructures[i + 3] + delta;
+			}
+			else if (fileStructures[i + 3] > 0) {
+				fileStructures[i + 3] = fileStructures[i + 3] + delta;
+			}
+		}
+	}
+	else if (*deltaStr == "-") {
+		for (long i = 0; i < fileStructuresSize; i = i + 4) {										// Цикл для высчитывания результирующего массива
+			if (type) {
+				if (fileStructures[i + 2] > 0) {
+					fileStructures[i + 2] = fileStructures[i + 2] - delta;
+					if (fileStructures[i + 2] <= 0 || fileStructures[i + 2] > 128) fileStructures[i + 2] = 1;
+				}
+				if (fileStructures[i + 3] > 0) {
+					fileStructures[i + 3] = fileStructures[i + 3] - delta;
+					if (fileStructures[i + 3] <= 0 || fileStructures[i + 3] > 128) fileStructures[i + 3] = 1;
+				}
+			}
+			else if (fileStructures[i + 3] > 0) {
+				fileStructures[i + 3] = fileStructures[i + 3] - delta;
+				if (fileStructures[i + 3] <= 0 || fileStructures[i + 3] > 128) fileStructures[i + 3] = 1;
+			}
+		}
+	}
+
+
+	ofstream fileOutput(fileOutputName, ios::out | ios::binary);
+	if (fileOutput.is_open()) {
+		fileOutput.write(reinterpret_cast<const char*>(fileStructures), fileStructuresSize);
+		fileOutput.close();
+	}
+	else {
+		cout << "Ошибка при записи файла" << fileOutputName << "\n";
+		return 1;
+	}
+
+	return 0;
+}
+
+
 int main(int argc, char* argv[]) {
-	setlocale(LC_ALL, "rus");
-	string compare = "/c", compareWAV = "/cwav", amplitudes = "/amp", primitiv = "/p";
+	setlocale(LC_ALL, "ru-RU");
+	SetConsoleCP(CP_UTF8);
+	SetConsoleOutputCP(CP_UTF8);
+	string compare = "/c", compareWAV = "/cwav", amplitudes = "/amp", primitiv = "/p", segmentA = "/sA", segmentB = "/sB", segmentC = "/sC";
 	if (argc <= 1) {
-		bool mode = false;
+		bool mode = false, debug = false;
 		string fstFile = "", secFile = "", choose = "", channels = "";
 	start:
 		cout << "Выберите действие\nДвух файлов с амплитудами - 1\n"
@@ -665,7 +1515,16 @@ int main(int argc, char* argv[]) {
 			"Получить фрагменты файла - 7\n"
 			"Восстановить из фрагментов структуры - 8\n"
 			"Создать из WAV кадры - 9\n"
-			"Создать из ComFrag Сегменты - 10\n"
+			"Создать из ComFrag Сегменты (работа с начала записи) - 10\n"
+			"Создать из ComFrag Сегменты (работа с центра записи) - 11\n"
+			"Создать из DRAZM   Сегменты (работа с центра записи) - 12\n"
+			"Убрать все амплитуды по прямой - 13\n"
+			"Сохранить топологию или увеличить характерные точки - 14\n"
+			"Только по косой и без полок - 15\n"
+			"Проверка структуры на наличие дефектов - 16\n"
+			"Поиск экстремумов - 17\n"
+			"Высчитать дельты в лоб - 18\n"
+			"Работа по диагонали - 19\n"
 			"Выбор: ";
 		getline(cin, choose);
 		if (choose == "1") {
@@ -695,7 +1554,7 @@ int main(int argc, char* argv[]) {
 			getline(cin, fstFile);
 			cout << "Укажите название файла, содержащий служебную информацию: ";
 			getline(cin, secFile);
-			sintezWavFromUNIPRIM(&fstFile, &secFile, true);
+			synthesizeWavFromUNIPRIM(fstFile, secFile, false);
 		}
 		else if (choose == "5") {
 			cout << "Укажите название певрого файла: ";
@@ -707,7 +1566,7 @@ int main(int argc, char* argv[]) {
 		else if (choose == "6") {
 			cout << "Укажите название файла, их которого необходимо извлечь заголовок: ";
 			getline(cin, fstFile);
-			getHeadingFrowWavFile(&fstFile);
+			getWavHeaderFromFile(fstFile);
 		}
 		else if (choose == "7") {
 			cout << "Укажите файл, который необходимо фрагментировать: ";
@@ -730,8 +1589,59 @@ int main(int argc, char* argv[]) {
 			cout << "Укажите дельту, по которой будут отсечения: ";
 			getline(cin, channels);
 			int delta = atoi(channels.c_str());
-			mode = true;
-			createSegments(&fstFile, 11025, &delta, &mode);
+			createSegmentsA(&fstFile, 11025, &delta, &debug, &mode);
+		}
+		else if (choose == "11") {
+			cout << "Укажите файл, из которого будет создан Сегмент: ";
+			getline(cin, fstFile);
+			cout << "Укажите дельту, по которой будут отсечения: ";
+			getline(cin, channels);
+			int delta = atoi(channels.c_str());
+			createSegmentsB(&fstFile, 11025, &delta, &debug, &mode);
+		}
+		else if (choose == "12") {
+			cout << "Укажите файл: ";
+			getline(cin, fstFile);
+			createSegmentsC(&fstFile, &debug, &mode);
+		}
+		else if (choose == "13") {
+			cout << "Укажите файл: ";
+			getline(cin, fstFile);
+			changeAllToAverageOblique(&fstFile);
+		}
+		else if (choose == "14") {
+			cout << "Укажите файл: ";
+			getline(cin, fstFile);
+			cout << "Если ввести 0, то будет сохранена топология.\nЗначения выше 0 - прибавление к значениям указанной величины, но до 100.\nВеличина амплитуды: ";
+			getline(cin, secFile);
+			changeAllPointsWithSavedStructure(&fstFile, secFile);
+		}
+		else if (choose == "15") {
+			cout << "Укажите файл: ";
+			getline(cin, fstFile);
+			changeAllStraightToOblique(&fstFile);
+		}
+		else if (choose == "16") {
+			cout << "Укажите файл: ";
+			getline(cin, fstFile);
+			checkStructureByStraightAndObliqe(&fstFile);
+		}
+		else if (choose == "17") {
+			cout << "Укажите файл: ";
+			getline(cin, fstFile);
+			processExtremums(&fstFile);
+		}
+		else if (choose == "18") {
+			cout << "Укажите файл: ";
+			getline(cin, fstFile);
+			getAllDeltasBetweenZeroAndDot(&fstFile);
+		}
+		else if (choose == "19") {
+			cout << "Укажите файл: ";
+			getline(cin, fstFile);
+			cout << "Увеличить или уменьшить? (+ \ -): ";
+			getline(cin, secFile);
+			diagonalProcessing(&fstFile, &secFile);
 		}
 		else {
 			return 0;
@@ -741,7 +1651,7 @@ int main(int argc, char* argv[]) {
 		goto start;
 	}
 	else {
-		bool mode = true;
+		bool mode = true, debug = false;
 		if (argc > 1 && !compare.compare(argv[1])) {							// для проверки - /c list1.dat list2.dat
 			string fstFileToCompare = argv[2];
 			string secFileToCompare = argv[3];
@@ -760,7 +1670,25 @@ int main(int argc, char* argv[]) {
 		else if (argc > 1 && !primitiv.compare(argv[1])) {					// для проверки - /p s1.txt k1.txt
 			string filewithPrimitivs = argv[2];
 			string serviceFile = argv[3];
-			sintezWavFromUNIPRIM(&filewithPrimitivs, &serviceFile, false);
+			synthesizeWavFromUNIPRIM(filewithPrimitivs, serviceFile, false);
+		}
+		else if (argc > 1 && !segmentA.compare(argv[1])) {					// Для проверки - /sA mono8.comfra 11025 10
+			string fileName = argv[2];
+			int rate = atoi(argv[3]);
+			int delta = atoi(argv[4]);
+			createSegmentsA(&fileName, rate, &delta, &debug, &mode);
+		}
+		else if (argc > 1 && !segmentB.compare(argv[1])) {					// Для проверки - /sA mono8.comfra 11025 10
+			string fileName = argv[2];
+			int rate = atoi(argv[3]);
+			int delta = atoi(argv[4]);
+			createSegmentsB(&fileName, rate, &delta, &debug, &mode);
+		}
+		else if (argc > 1 && !segmentC.compare(argv[1])) {					// Для проверки - /sA mono8.comfra 11025 10
+			string fileName = argv[2];
+			int rate = atoi(argv[3]);
+			int delta = atoi(argv[4]);
+			createSegmentsC(&fileName, &debug, &mode);
 		}
 		return 0;
 	}
